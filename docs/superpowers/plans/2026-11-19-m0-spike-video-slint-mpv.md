@@ -484,7 +484,9 @@ fn main() -> anyhow::Result<()> {
             }
             slint::RenderingState::BeforeRendering => {
                 if let Some(v) = video.borrow().as_ref() {
-                    if frame_pending.swap(false, Ordering::AcqRel) {
+                    // À l'EOF, mpv présente une frame vide : on garde la dernière
+                    // image au lieu de noircir la texture.
+                    if frame_pending.swap(false, Ordering::AcqRel) && !player.eof_reached() {
                         if let Err(e) = v.render_ctx.render::<gl::LoaderCtx>(
                             v.fbo.0.get() as i32,
                             gl::VIDEO_W as i32,
@@ -757,3 +759,31 @@ Le plan M1 sera écrit après le verdict, car il dépend du renderer retenu :
 - **M1** : workspace `youtus-*`, shell Slint, OAuth device flow, `browse` accueil/abonnements, miniatures, cache SQLite.
 - **S1 (parallèle, sans GUI)** : sonde de capacités OAuth (accueil/historique/like/`playbackTracking`/`createCommentParams`).
 - **M2** : page Watch, yt-dlp, lecteur validé en M0.
+
+---
+
+## Spike S1 (hors M0) — capacités OAuth
+
+Crate `spikes/s1-oauth` : binaire headless (sans GUI, sans libmpv) qui exécute le
+device flow TV puis mesure l'accueil (`browse FEwhat_to_watch`), l'historique
+(`browse FEhistory`), le like (`like/like` puis `like/removelike`), le bloc
+`playbackTracking` du `/player` (avec `signatureTimestamp` extrait du player JS)
+et la présence de `createCommentParams` dans la continuation commentaires.
+
+Vérifié en sandbox :
+
+```bash
+cargo check --manifest-path spikes/s1-oauth/Cargo.toml --all-targets   # 0 warning
+cargo test  --manifest-path spikes/s1-oauth/Cargo.toml                 # 10 passed
+cargo build --release --manifest-path spikes/s1-oauth/Cargo.toml       # OK, 34 s
+./spikes/s1-oauth/target/release/s1-oauth --help                       # OK
+```
+
+Tests couverts : collecteur JSON récursif, `simpleText`/`runs`, extraction
+`jsUrl` et `signatureTimestamp`, recherche de la continuation `comment-item-section`,
+lecture de `createCommentParams`, percent-encoding OAuth. Tous purs, sans réseau.
+
+Non vérifiable ici : le device flow lui-même et les réponses de YouTube — il faut
+un compte réel et un client OAuth « TV et périphériques à entrée limitée ».
+La matrice de §5.3 de la spec reste donc « attendu » jusqu'à l'exécution, qui
+réécrit `docs/superpowers/spikes/2026-11-19-s1-capabilities.md`.

@@ -55,6 +55,12 @@ impl MpvPlayer {
         self.mpv.get_property::<f64>("time-pos").unwrap_or(f64::NAN)
     }
 
+    pub fn eof_reached(&self) -> bool {
+        self.mpv
+            .get_property::<bool>("eof-reached")
+            .unwrap_or(false)
+    }
+
     pub fn duration(&self) -> f64 {
         self.mpv.get_property::<f64>("duration").unwrap_or(f64::NAN)
     }

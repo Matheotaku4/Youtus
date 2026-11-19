@@ -168,7 +168,7 @@ pub trait Player {
 
 ### 5.1 OAuth device flow (défaut)
 
-1. `POST https://www.youtube.com/o/oauth2/device/code` avec `client_id` (type « TV et appareils à accès limité »), `scope=https://www.googleapis.com/auth/youtube https://www.googleapis.com/auth/youtube.readonly`, `device_id` (UUID persistant), `device_model=ytlr::`.
+1. `POST https://oauth2.googleapis.com/device/code` (repli `https://www.youtube.com/o/oauth2/device/code`) avec `client_id` (type « TV et appareils à accès limité »), `scope=https://www.googleapis.com/auth/youtube` — ce scope couvre déjà la lecture, un `readonly` séparé est inutile —, `device_id`, `device_model=ytlr::`.
 2. UI : afficher `user_code` + `verification_url` (youtube.com/activate).
 3. Poll `https://oauth2.googleapis.com/token` (`grant_type=urn:ietf:params:oauth:grant-type:device_code`), respecter `interval`.
 4. Stocker **uniquement le refresh token** dans le keyring ; access token en mémoire, rafraîchi à 80 % de sa durée.
@@ -183,16 +183,48 @@ pub trait Player {
 
 ### 5.3 Matrice de capacités (affichée dans Réglages)
 
-| Capacité | OAuth | Cookies |
-|---|---|---|
-| Accueil / Abonnements / Historique / Playlists | ✅ | ✅ |
-| Like, dislike, abonnement | ✅ (validé au spike S1) | ✅ |
-| Lire les commentaires | ✅ | ✅ |
-| Publier un commentaire | ❌ | ✅ |
-| Beacons de progression | ✅ (validé au spike S1) | ✅ |
-| Extraction du flux plus fiable (PO tokens) | ~ | ✅ |
+| Capacité | OAuth | Cookies | Mesurée par |
+|---|---|---|---|
+| Accueil / Abonnements / Historique / Playlists | attendu ✅ | attendu ✅ | `browse FEwhat_to_watch` / `FEhistory` |
+| Like, dislike, abonnement | attendu ✅ | attendu ✅ | `like/like` puis `like/removelike` |
+| Lire les commentaires | attendu ✅ | attendu ✅ | `next` + continuation `comment-item-section` |
+| Publier un commentaire | **attendu ❌** | attendu ✅ | présence de `createCommentParams` |
+| Beacons de progression | attendu ✅ | attendu ✅ | `playbackTracking` du `/player` |
+| Extraction du flux plus fiable (PO tokens) | ~ | attendu ✅ | hors S1, mesuré en M2 |
 
-La sonde de capacités s'exécute au login : `account/account_menu` + `browse FEhistory` + `player` sur une vidéo témoin, et enregistre les résultats. L'UI grise les actions indisponibles avec une infobulle explicite.
+Les cellules ci-dessus sont des **prédictions** (documentation Google + retour d'expérience des clients tiers, notamment l'absence de `force-ssl` dans le scope TV qui bloque la publication de commentaires). Ce sont les valeurs mesurées par la sonde S1 (§5.4) qui remplacent ces prédictions et qui sont affichées dans Réglages — jamais l'inverse. Tant qu'un compte n'a pas été sondé, l'app affiche « non vérifié » et non « ✅ ».
+
+La sonde de capacités s'exécute au login et à la demande : `account/account_menu` + `browse FEhistory` + `player` sur une vidéo témoin, et enregistre les résultats par compte. L'UI grise les actions indisponibles avec une infobulle explicite.
+
+### 5.4 Sonde S1 (binaire headless)
+
+`spikes/s1-oauth` est un binaire sans GUI et sans libmpv : device flow, puis mesure des capacités réelles. C'est la **seule source de vérité** pour les cellules de §5.3.
+
+```bash
+YOUTUS_OAUTH_CLIENT_ID=<id client TV> cargo run --release \
+  --manifest-path spikes/s1-oauth/Cargo.toml -- \
+  --markdown docs/superpowers/spikes/2026-11-19-s1-capabilities.md \
+  --json /tmp/s1-report.json
+```
+
+Création du client OAuth (une fois) : console Google Cloud → projet → activer « YouTube Data API v3 » → écran de consentement externe en mode test avec son compte en testeur → identifiant OAuth de type « TV et périphériques à entrée limitée ».
+
+| Vérification | Endpoint | Critère de succès | Interprétation de l'échec |
+|---|---|---|---|
+| Authentification Bearer | `account/account_menu` | `accountName` présent | le jeton TV n'est pas accepté par ce contexte client |
+| Accueil personnalisé | `browse FEwhat_to_watch` | ≥ 1 `videoRenderer` | feed anonyme ou `feedNudgeRenderer` : personnalisation refusée |
+| Historique | `browse FEhistory` | ≥ 1 `videoRenderer` | scope insuffisant ou compte neuf |
+| Like | `like/like` puis `like/removelike` | `likeStatus = LIKE` | mutation refusée → bouton grisé en UI |
+| Progression | `player` avec `signatureTimestamp` | `videostatsWatchtimeUrl` **et** `videostatsPlaybackUrl` | pas de progression possible sans cookies |
+| Commenter | `next` sur la continuation commentaires | `createCommentEndpoint.createCommentParams` non vide | publication impossible en OAuth → cookies requis |
+
+Protocole et pièges :
+
+- `signatureTimestamp` est extrait du player JS courant (HTML watch → `jsUrl` → `signatureTimestamp:<n>`) ; sans lui, `/player` n'inclut pas `playbackTracking`. La sonde distingue « bloc absent avec sts valide » de « sts introuvable » au lieu de conclure à tort.
+- Le like est **restauré** systématiquement (`like/removelike`) ; `--skip-like` supprime toute mutation.
+- Deux contextes sont essayés (`WEB`, puis `TVHTML5` si `--client` n'est pas fixé) : le jeton vient d'un client TV et n'est pas garanti accepté par `WEB`. Le contexte qui répond est consigné dans le rapport.
+- Le refresh token est écrit dans `$XDG_DATA_HOME/youtus/oauth.json` en 0600 (repli `~/.local/share/youtus/`), jamais dans le dépôt ni dans un log.
+- Vidéo témoin par défaut `dQw4w9WgXcQ` (commentaires ouverts, likeable), remplaçable par `--video`.
 
 ---
 

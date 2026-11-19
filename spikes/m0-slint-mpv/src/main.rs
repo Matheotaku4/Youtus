@@ -73,7 +73,9 @@ fn main() -> anyhow::Result<()> {
                 }
                 slint::RenderingState::BeforeRendering => {
                     if let Some(v) = video.borrow().as_ref() {
-                        if frame_pending.swap(false, Ordering::AcqRel) {
+                        // À l'EOF, mpv présente une frame vide : on garde la dernière
+                        // image affichée au lieu de noircir la texture.
+                        if frame_pending.swap(false, Ordering::AcqRel) && !player.eof_reached() {
                             let started = Instant::now();
                             if let Err(e) = v.render_ctx.render::<gl::LoaderCtx>(
                                 v.fbo.0.get() as i32,
