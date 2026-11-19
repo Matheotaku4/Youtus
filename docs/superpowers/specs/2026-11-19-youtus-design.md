@@ -185,18 +185,19 @@ pub trait Player {
 
 ### 5.3 Matrice de capacités (affichée dans Réglages)
 
-| Capacité | OAuth | Cookies | Mesurée par |
+**Mesuré le 2026-11-19** (S1, compte réel, device flow complet) :
+
+| Capacité | OAuth (client personnel) | Cookies | Mesurée par |
 |---|---|---|---|
-| Accueil / Abonnements / Historique / Playlists | attendu ✅ | attendu ✅ | `browse FEwhat_to_watch` / `FEhistory` |
-| Like, dislike, abonnement | attendu ✅ | attendu ✅ | `like/like` puis `like/removelike` |
-| Lire les commentaires | attendu ✅ | attendu ✅ | `next` + continuation `comment-item-section` |
-| Publier un commentaire | **attendu ❌** | attendu ✅ | présence de `createCommentParams` |
-| Beacons de progression | attendu ✅ | attendu ✅ | `playbackTracking` du `/player` |
-| Extraction du flux plus fiable (PO tokens) | ~ | attendu ✅ | hors S1, mesuré en M2 |
+| API Data v3 (chaînes, abonnements, playlists, notes) | ✅ 200 | ✅ | `channels?mine=true` |
+| Accueil / Abonnements / Historique / Playlists (InnerTube) | ❌ 400 `INVALID_ARGUMENT` | à mesurer (S2) | `browse FEwhat_to_watch` / `FEhistory` |
+| Like, dislike, abonnement (InnerTube) | ❌ 400 | à mesurer (S2) | `like/like`, `subscription/subscribe` |
+| Lire / publier un commentaire | ❌ | à mesurer (S2) | `next` + continuation |
+| Beacons de progression | non mesurable sans InnerTube | à mesurer (S2) | `playbackTracking` |
 
-Les cellules ci-dessus sont des **prédictions** (documentation Google + retour d'expérience des clients tiers, notamment l'absence de `force-ssl` dans le scope TV qui bloque la publication de commentaires). Ce sont les valeurs mesurées par la sonde S1 (§5.4) qui remplacent ces prédictions et qui sont affichées dans Réglages — jamais l'inverse. Tant qu'un compte n'a pas été sondé, l'app affiche « non vérifié » et non « ✅ ».
+Le jeton est valide — l'API Data v3 rend la chaîne du compte — mais InnerTube le refuse dans les quatre profils testés (WEB, TVHTML5 7.x, 5.x downgraded, 7.20250209), alors que les mêmes requêtes **sans** Bearer répondent 200/401. Autrement dit : un client OAuth créé par un tiers n'est pas reconnu par `youtubei/v1`. Les clients qui fonctionnent (YouTube.js, Dmitry's WP YouTube) s'appuient tous sur le même couple public d'identifiants TV, pas sur un client personnel. Le détail est dans `spikes/2026-11-19-s1-capabilities.md` et la décision est ouverte (§5.5).
 
-La sonde de capacités s'exécute au login et à la demande : `account/account_menu` + `browse FEhistory` + `player` sur une vidéo témoin, et enregistre les résultats par compte. L'UI grise les actions indisponibles avec une infobulle explicite.
+La matrice affichée dans Réglages est celle **mesurée par compte** ; tant qu'un compte n'a pas été sondé, l'app affiche « non vérifié ». L'UI grise les actions indisponibles avec une infobulle explicite.
 
 ### 5.4 Sonde S1 (binaire headless)
 
@@ -227,6 +228,16 @@ Protocole et pièges :
 - Deux contextes sont essayés (`WEB`, puis `TVHTML5` si `--client` n'est pas fixé) : le jeton vient d'un client TV et n'est pas garanti accepté par `WEB`. Le contexte qui répond est consigné dans le rapport.
 - Le refresh token est écrit dans `$XDG_DATA_HOME/youtus/oauth.json` en 0600 (repli `~/.local/share/youtus/`), jamais dans le dépôt ni dans un log.
 - Vidéo témoin par défaut `dQw4w9WgXcQ` (commentaires ouverts, likeable), remplaçable par `--video`.
+- La sonde vérifie d'abord le jeton sur l'API Data v3 (`channels?mine=true`) : 200 prouve que l'échec d'InnerTube vient du client, pas de l'authentification.
+
+### 5.5 Décision d'authentification issue de S1
+
+Mesure : OAuth maison → API Data v3 ✅, InnerTube ❌ (400 quel que soit le contexte). Deux voies, non tranchées à ce stade :
+
+1. **Identifiants TV publics** (ce que fait YouTube.js) : InnerTube authentifié tout de suite, au prix d'un couple d'identifiants Google rotatif et d'un client qui n'est pas le nôtre.
+2. **Cookies pour InnerTube + OAuth pour l'API Data v3** : aucune dépendance à un client tiers, mais `cookies.txt` obligatoire pour l'accueil personnalisé, l'historique, le like et la progression.
+
+Tant que la décision n'est pas prise, M1 doit rester bâti sur une couche `youtus-yt` qui reçoit un `AuthStrategy` (`Bearer`, `Sapisid`, `Anonymous`) : les deux voies partagent les mêmes endpoints et seule l'en-tête change.
 
 ---
 
