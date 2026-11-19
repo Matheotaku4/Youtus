@@ -116,7 +116,7 @@ ytdl=no, config=no, cache=yes, demuxer-max-bytes=256MiB
 
 `ytdl=no` : c'est nous qui résolvons via yt-dlp. `keep-open=yes` : garder la dernière frame après EOF.
 
-### 4.3 Résolution du flux (`youtus-play::ytdlp`)
+### 4.4 Résolution du flux (`youtus-play::ytdlp`)
 
 ```rust
 pub struct ResolvedStream {
@@ -132,7 +132,7 @@ pub fn resolve(video_id: &str, max_height: u32, cookies: Option<&Path>) -> Resul
 
 Commande : `yt-dlp -J --no-warnings --no-playlist --no-progress -f "bv*[height<=H]+ba/b[height<=H]/b" --extractor-args "youtube:player-client=tv,ios,web_safari"` (+ `--cookies` si fourni). Les `http_headers` sont passés à mpv via `http-header-fields`. Cache mémoire 30 min par `(video_id, max_height)`. Si `yt-dlp` est absent : erreur typée `PlayerError::YtDlpMissing` et action UI « installer yt-dlp » (téléchargement du binaire standalone dans `~/.local/share/youtus/bin`).
 
-### 4.4 API `trait Player`
+### 4.5 API `trait Player`
 
 ```rust
 /// Confiné au thread UI en v1 : le render context GL y vit déjà.
@@ -151,7 +151,7 @@ pub trait Player {
 
 `snapshot()` est interrogé toutes les 250 ms par un timer Slint (pas d'observer property mpv en v1 : plus simple, coût négligeable).
 
-### 4.5 Dégradation
+### 4.6 Dégradation
 
 | Panne | Comportement |
 |---|---|
