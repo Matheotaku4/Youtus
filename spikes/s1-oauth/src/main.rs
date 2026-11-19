@@ -141,6 +141,13 @@ fn run() -> Result<()> {
         }
     };
 
+    let data_api = probe::probe_data_api(&access_token);
+    println!(
+        "• API publique : {} — {}",
+        if data_api.ok { "jeton accepté" } else { "jeton refusé" },
+        data_api.detail
+    );
+
     let mut authenticated: Option<(Innertube, AccountInfo)> = None;
     let mut attempts = Vec::new();
 
@@ -178,6 +185,11 @@ fn run() -> Result<()> {
     println!("• vidéo de test : {}\n", args.video);
 
     let mut rows = Vec::new();
+    rows.push(Row {
+        name: "Jeton → API Data v3",
+        ok: data_api.ok,
+        detail: data_api.detail.clone(),
+    });
     rows.push(Row {
         name: "Authentification Bearer",
         ok: true,

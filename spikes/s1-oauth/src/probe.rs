@@ -35,6 +35,48 @@ pub struct LikeProbe {
     pub detail: String,
 }
 
+pub struct DataApiProbe {
+    pub ok: bool,
+    pub detail: String,
+}
+
+/// Vérifie le jeton sur l'API YouTube Data v3 : si elle répond, le jeton est
+/// valide et le 400 d'InnerTube vient du client, pas de l'authentification.
+pub fn probe_data_api(access_token: &str) -> DataApiProbe {
+    let response = ureq::agent()
+        .get("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true")
+        .set("Authorization", &format!("Bearer {access_token}"))
+        .call();
+
+    match response {
+        Ok(response) => {
+            let value: Value = response.into_json().unwrap_or(Value::Null);
+            let title = value
+                .pointer("/items/0/snippet/title")
+                .and_then(Value::as_str);
+            DataApiProbe {
+                ok: true,
+                detail: match title {
+                    Some(title) => format!("HTTP 200, chaîne « {title} »"),
+                    None => "HTTP 200 sans chaîne (compte sans chaîne ?)".to_owned(),
+                },
+            }
+        }
+        Err(ureq::Error::Status(code, response)) => {
+            let body = response.into_string().unwrap_or_default();
+            let snippet: String = body.chars().take(220).collect();
+            DataApiProbe {
+                ok: false,
+                detail: format!("HTTP {code} : {snippet}"),
+            }
+        }
+        Err(error) => DataApiProbe {
+            ok: false,
+            detail: format!("{error}"),
+        },
+    }
+}
+
 pub fn probe_account(yt: &mut Innertube) -> Result<AccountProbe> {
     let value = yt.post("account/account_menu", json!({}))?;
     let name = find_string(&value, "accountName")
