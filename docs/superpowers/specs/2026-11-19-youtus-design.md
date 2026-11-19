@@ -337,6 +337,7 @@ Secrets (keyring `youtus` / Secret Service) : `oauth_refresh_token`, `cookies_ne
 - `youtus-store` : migrations + upsert positions (base `:memory:`).
 - UI : `cargo build` + vérification manuelle documentée par écran (pas de tests d'IHM automatisés en v1).
 - Sonde réseau réelle : `#[ignore]` + variables `YOUTUS_LIVE=1`.
+- **Règle d'isolation** (validée par le spike M0) : toute logique sans I/O — assainissement des temps, URLs de stats, `cpn`, signature SAPISIDHASH, machine d'état de progression — vit dans un crate sans dépendance système, testable sans libmpv, sans Slint et sans serveur graphique.
 
 **Aucune fonctionnalité n'est « finie » sans sa commande de vérification exécutée et son résultat noté dans le plan.**
 

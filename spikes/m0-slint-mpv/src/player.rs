@@ -1,24 +1,7 @@
 use anyhow::Result;
 
-/// mpv renvoie NaN tant que le fichier n'est pas chargé, et peut renvoyer
-/// une position supérieure à la durée après un seek en fin de fichier.
-pub fn sanitize_time(position: f64, duration: f64) -> (f64, f64) {
-    let d = if duration.is_finite() && duration > 0.0 {
-        duration
-    } else {
-        0.0
-    };
-    let p = if position.is_finite() && position > 0.0 {
-        if d > 0.0 {
-            position.min(d)
-        } else {
-            position
-        }
-    } else {
-        0.0
-    };
-    (p, d)
-}
+/// Réexport de la logique pure (crate `m0-core`, testable sans libmpv).
+pub use m0_core::sanitize_time;
 
 pub struct MpvPlayer {
     mpv: &'static libmpv2::Mpv,
@@ -80,30 +63,5 @@ impl MpvPlayer {
         self.mpv
             .command("seek", &[&format!("{secs:.3}"), "absolute"])?;
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::sanitize_time;
-
-    #[test]
-    fn nan_devient_zero() {
-        assert_eq!(sanitize_time(f64::NAN, f64::NAN), (0.0, 0.0));
-    }
-
-    #[test]
-    fn position_bornee_par_la_duree() {
-        assert_eq!(sanitize_time(42.0, 30.0), (30.0, 30.0));
-    }
-
-    #[test]
-    fn valeurs_normales_inchangees() {
-        assert_eq!(sanitize_time(12.5, 60.0), (12.5, 60.0));
-    }
-
-    #[test]
-    fn duree_inconnue_garde_la_position() {
-        assert_eq!(sanitize_time(12.5, 0.0), (12.5, 0.0));
     }
 }

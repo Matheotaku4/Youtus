@@ -121,7 +121,9 @@ Notes : `libmpv2-sys` embarque des bindings pré-générés et n'appelle pas pkg
 | `spikes/m0-slint-mpv/ui/app.slint` | Fenêtre, image vidéo, contrôles, overlay de mesures |
 | `spikes/m0-slint-mpv/src/main.rs` | Câblage : notifier, timers, callbacks |
 | `spikes/m0-slint-mpv/src/gl.rs` | Loader GL, texture + FBO, render context mpv |
-| `spikes/m0-slint-mpv/src/player.rs` | Singleton mpv, commandes, `sanitize_time` |
+| `spikes/m0-slint-mpv/src/player.rs` | Singleton mpv, commandes, réexport de `sanitize_time` |
+| `spikes/m0-core/src/lib.rs` | `sanitize_time` + tests, **zéro dépendance** (testable sans libmpv) |
+| `scripts/m0-measure.sh` | Mesures automatisées (fps, ms/frame, CPU, RSS) + remplissage du verdict |
 | `docs/superpowers/spikes/2026-11-19-m0-verdict.md` | Mesures et décision |
 
 ---
@@ -346,9 +348,9 @@ Expected: `OpenGL · <vendor> · <renderer> · <version>`.
   - `gl::GlVideo::setup(api, mpv) -> Result<GlVideo>` avec `fbo`, `render_ctx: RenderContext<'static>`, `image: slint::Image` ;
   - `enum UiUpdate { Frame(Image, String), Status(String) }`.
 
-- [x] **Step 1: Tests de `sanitize_time`** (fait)
+- [x] **Step 1: Tests de `sanitize_time`** (fait — exécutés, 4/4)
 
-Dans `src/player.rs` :
+Dans `spikes/m0-core/src/lib.rs` : crate `m0-core`, **aucune dépendance** (ni libmpv, ni Slint, ni système graphique), donc exécutable partout.
 
 ```rust
 #[cfg(test)]
@@ -377,7 +379,9 @@ mod tests {
 }
 ```
 
-- [x] **Step 2: `player.rs`** — voir le fichier du dépôt. Points d'API vérifiés :
+Vérification : `cargo test --manifest-path spikes/m0-core/Cargo.toml` → `4 passed; 0 failed` (journal de vérification en fin de document).
+
+- [x] **Step 2: `player.rs`** — voir le fichier du dépôt ; il réexporte la logique pure (`pub use m0_core::sanitize_time;`). Points d'API vérifiés :
 
 ```rust
 let mpv = libmpv2::Mpv::with_initializer(|init| {
@@ -608,6 +612,26 @@ let _timer = timer;
 
 Les clones `frames`/`render_us`/`pending_ui` doivent être ajoutés dans le bloc de captures du notifier.
 
+**4. Métriques pour le script** (déjà dans `main.rs`) : si `M0_METRICS` est défini, l'application écrit un CSV `t_s,fps,render_ms,position_s,duration_s,playing` à chaque tick d'une seconde ; `M0_AUTOPAUSE_SEC=<n>` met la lecture en pause à n secondes, ce qui permet de mesurer l'inactivité sans interaction souris.
+
+```rust
+let mut metrics = match std::env::var("M0_METRICS") {
+    Ok(path) => {
+        let mut file = File::create(&path)?;
+        writeln!(file, "t_s,fps,render_ms,position_s,duration_s,playing")?;
+        Some(file)
+    }
+    Err(_) => None,
+};
+let autopause = std::env::var("M0_AUTOPAUSE_SEC").ok().and_then(|v| v.parse::<f64>().ok());
+
+// dans le timer d'une seconde :
+if let Some(file) = metrics.as_mut() {
+    writeln!(file, "{:.0},{:.0},{:.2},{:.2},{:.2},{}",
+        started_at.elapsed().as_secs_f64(), fps, ms, p, d, u8::from(!player.paused()))?;
+}
+```
+
 - [x] **Step 3: Callback de seek** (fait)
 
 ```rust
@@ -675,7 +699,14 @@ Essais obligatoires : 1280×800 ; redimensionné 1920×1080 ; pause 10 s ; 10 se
 - Orientation corrigée par `flip` ou `BorrowedOpenGLTextureOrigin` ?
 ```
 
-- [ ] **Step 2: Renseigner les mesures réelles et cocher la décision.**
+- [ ] **Step 2: Mesurer avec le script (il remplit le tableau)**
+
+```bash
+./scripts/m0-measure.sh --label "1280×800"   --seconds 30
+./scripts/m0-measure.sh --label "pause 10 s" --seconds 12 --pause 2
+```
+
+Le redimensionnement 1920×1080 et les 10 seeks restent manuels (interaction souris), puis on relance le script avec `--label "1920×1080"`. Le script donne les chiffres et un pré-diagnostic ; le verdict visuel et la case cochée restent humains.
 - [ ] **Step 3: Commit.**
 
 ---
@@ -694,7 +725,19 @@ export PKG_CONFIG_PATH=$PWD/../../vendor/pkgconfig
 cargo check
 ```
 
-Résultat : `Finished dev profile [unoptimized + debuginfo] target(s) in 0.59s`, **zéro warning**.
+Résultat : `Finished dev profile [unoptimized + debuginfo] target(s) in 0.90s`, **zéro warning**.
+
+Tests purs exécutés sans libmpv (crate `m0-core`, aucune dépendance) :
+
+```bash
+cd spikes/m0-core
+env -u LIBRARY_PATH -u LD_LIBRARY_PATH -u PKG_CONFIG_PATH cargo test
+# running 4 tests ... test result: ok. 4 passed; 0 failed; 0 ignored
+ldd <binaire de test>
+# linux-vdso.so.1 / libgcc_s.so.1 / libc.so.6 — aucune libmpv
+```
+
+Script de mesure testé sur des CSV factices (`--csv` + `--samples`) : ligne obtenue `| TEST | 58 | 59 | 2.3 | 12 | 205 |`, insérée dans un tableau de verdict sans toucher aux autres lignes.
 
 Erreurs réelles trouvées puis corrigées (elles sont reprises dans le code ci-dessus) :
 
@@ -704,7 +747,7 @@ Erreurs réelles trouvées puis corrigées (elles sont reprises dans le code ci-
 | 2 | `E0277: *mut () cannot be sent between threads` | `slint::Weak` non `Send` dans `invoke_from_event_loop` depuis le callback de frame | flag `Arc<AtomicBool>` + timer UI de redraw (8 ms) |
 | 3 | `E0277: *mut () cannot be shared between threads` | `slint::Image` non `Send`, transportée par `invoke_from_event_loop` | slot `Rc<RefCell<Option<UiUpdate>>>` lu sur le thread UI |
 
-Non vérifié ici, et qui reste à faire sur Wayland : édition de liens, `Gtk`/EGL, rendu effectif, `armv` fps, `#12030`. `cargo test` n'est pas exécutable dans ce sandbox : le binaire de test charge `libmpv.so.2`, dont les dépendances (`libav*`, `libass`, …) sont absentes.
+Non vérifié ici : édition de liens du binaire graphique, EGL/GLX, rendu effectif, fps réels et `#12030` — tout cela exige Wayland. Les tests purs, eux, tournent sans libmpv.
 
 ## Après M0
 

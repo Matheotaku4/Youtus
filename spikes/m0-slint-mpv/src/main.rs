@@ -4,14 +4,16 @@ mod player;
 slint::include_modules!();
 
 use std::cell::RefCell;
+use std::fs::File;
+use std::io::Write;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Mise à jour d'UI produite par le notifier de rendu (thread UI) et appliquée
-/// par le timer, hors de la phase de rendu. `slint::Image` n'étant pas `Send`,
-/// elle ne doit jamais traverser un canal inter-thread.
+/// par le timer, hors de la phase de rendu. `slint::Image` et `slint::Weak`
+/// n'étant pas `Send`, elles ne doivent jamais traverser un canal inter-thread.
 enum UiUpdate {
     Frame(slint::Image, String),
     Status(String),
@@ -95,27 +97,6 @@ fn main() -> anyhow::Result<()> {
             })?;
     }
 
-    {
-        let player = player.clone();
-        let weak = app.as_weak();
-        app.on_toggle_play(move || {
-            let _ = player.set_paused(!player.paused());
-            if let Some(app) = weak.upgrade() {
-                app.set_playing(!player.paused());
-            }
-        });
-    }
-
-    {
-        let player = player.clone();
-        app.on_seek_to(move |fraction| {
-            let (_, d) = player::sanitize_time(player.time_position(), player.duration());
-            if d > 0.0 {
-                let _ = player.seek_absolute((fraction as f64 * d).clamp(0.0, d));
-            }
-        });
-    }
-
     // Le flag de frame est consommé par un timer côté UI : pas d'appel inter-thread.
     let redraw = slint::Timer::default();
     {
@@ -144,6 +125,42 @@ fn main() -> anyhow::Result<()> {
     }
     let _redraw = redraw;
 
+    {
+        let player = player.clone();
+        let weak = app.as_weak();
+        app.on_toggle_play(move || {
+            let _ = player.set_paused(!player.paused());
+            if let Some(app) = weak.upgrade() {
+                app.set_playing(!player.paused());
+            }
+        });
+    }
+
+    {
+        let player = player.clone();
+        app.on_seek_to(move |fraction| {
+            let (_, d) = player::sanitize_time(player.time_position(), player.duration());
+            if d > 0.0 {
+                let _ = player.seek_absolute((fraction as f64 * d).clamp(0.0, d));
+            }
+        });
+    }
+
+    // Instrumentation pour scripts/m0-measure.sh : un CSV par seconde.
+    // M0_METRICS=/chemin.csv  et  M0_AUTOPAUSE_SEC=<secondes> (optionnel).
+    let started_at = Instant::now();
+    let mut metrics = match std::env::var("M0_METRICS") {
+        Ok(path) => {
+            let mut file = File::create(&path)?;
+            writeln!(file, "t_s,fps,render_ms,position_s,duration_s,playing")?;
+            Some(file)
+        }
+        Err(_) => None,
+    };
+    let autopause = std::env::var("M0_AUTOPAUSE_SEC")
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok());
+
     let timer = slint::Timer::default();
     {
         let player = player.clone();
@@ -166,6 +183,25 @@ fn main() -> anyhow::Result<()> {
 
                 let (p, d) = player::sanitize_time(player.time_position(), player.duration());
                 let progress = if d > 0.0 { (p / d) as f32 } else { 0.0 };
+
+                if let Some(limit) = autopause {
+                    if !player.paused() && p >= limit {
+                        let _ = player.set_paused(true);
+                    }
+                }
+
+                if let Some(file) = metrics.as_mut() {
+                    let _ = writeln!(
+                        file,
+                        "{:.0},{:.0},{:.2},{:.2},{:.2},{}",
+                        started_at.elapsed().as_secs_f64(),
+                        fps,
+                        ms,
+                        p,
+                        d,
+                        u8::from(!player.paused())
+                    );
+                }
 
                 if let Some(app) = weak.upgrade() {
                     app.set_fps(fps);
