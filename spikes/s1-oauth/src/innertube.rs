@@ -4,64 +4,100 @@ use serde_json::{json, Map, Value};
 use crate::json_util::find_string;
 
 pub const WEB_CLIENT_VERSION: &str = "2.20261101.00.00";
-pub const TV_CLIENT_VERSION: &str = "7.20250101.00.00";
+pub const TV_CLIENT_VERSION: &str = "7.20260707.07.00";
+pub const TV_DOWNGRADED_VERSION: &str = "5.20260707";
+pub const TV_PREVIOUS_VERSION: &str = "7.20250209.19.00";
+
+const CHROME_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) \
+                         Chrome/140.0.0.0 Safari/537.36";
+const COBALT_UA: &str = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold \
+                         (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ClientKind {
+pub enum Family {
     Web,
     Tv,
 }
 
-impl ClientKind {
-    pub fn label(self) -> &'static str {
-        match self {
-            ClientKind::Web => "WEB",
-            ClientKind::Tv => "TVHTML5",
-        }
-    }
+/// Un couple contexte InnerTube + en-têtes. Le jeton OAuth du device flow est
+/// lié à un client TV : les profils sont essayés dans l'ordre jusqu'à acceptation.
+pub struct Profile {
+    pub label: &'static str,
+    pub client_name: &'static str,
+    pub version: String,
+    pub header_name: &'static str,
+    pub user_agent: &'static str,
+    pub platform: Option<&'static str>,
+    pub family: Family,
+}
 
-    fn version(self) -> String {
-        let (default, env) = match self {
-            ClientKind::Web => (WEB_CLIENT_VERSION, "YOUTUS_WEB_VERSION"),
-            ClientKind::Tv => (TV_CLIENT_VERSION, "YOUTUS_TV_VERSION"),
-        };
-        std::env::var(env).unwrap_or_else(|_| default.to_owned())
-    }
+pub fn profiles(family: Option<Family>) -> Vec<Profile> {
+    let web_version =
+        std::env::var("YOUTUS_WEB_VERSION").unwrap_or_else(|_| WEB_CLIENT_VERSION.to_owned());
+    let tv_version =
+        std::env::var("YOUTUS_TV_VERSION").unwrap_or_else(|_| TV_CLIENT_VERSION.to_owned());
 
-    fn client_name_header(self) -> &'static str {
-        match self {
-            ClientKind::Web => "1",
-            ClientKind::Tv => "7",
-        }
-    }
+    let all = vec![
+        Profile {
+            label: "WEB",
+            client_name: "WEB",
+            version: web_version,
+            header_name: "1",
+            user_agent: CHROME_UA,
+            platform: None,
+            family: Family::Web,
+        },
+        Profile {
+            label: "TVHTML5 7.x",
+            client_name: "TVHTML5",
+            version: tv_version,
+            header_name: "7",
+            user_agent: COBALT_UA,
+            platform: Some("TV"),
+            family: Family::Tv,
+        },
+        Profile {
+            label: "TVHTML5 5.x (downgraded)",
+            client_name: "TVHTML5",
+            version: TV_DOWNGRADED_VERSION.to_owned(),
+            header_name: "7",
+            user_agent: COBALT_UA,
+            platform: Some("TV"),
+            family: Family::Tv,
+        },
+        Profile {
+            label: "TVHTML5 7.20250209",
+            client_name: "TVHTML5",
+            version: TV_PREVIOUS_VERSION.to_owned(),
+            header_name: "7",
+            user_agent: COBALT_UA,
+            platform: Some("TV"),
+            family: Family::Tv,
+        },
+    ];
 
-    fn user_agent(self) -> &'static str {
-        match self {
-            ClientKind::Web => {
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) \
-                 Chrome/140.0.0.0 Safari/537.36"
-            }
-            ClientKind::Tv => "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.1",
-        }
+    match family {
+        Some(family) => all.into_iter().filter(|p| p.family == family).collect(),
+        None => all,
     }
 }
 
 pub struct Innertube {
     agent: ureq::Agent,
-    pub kind: ClientKind,
+    pub profile: Profile,
     visitor: Option<String>,
     token: Option<String>,
 }
 
 impl Innertube {
-    pub fn new(kind: ClientKind, token: Option<String>) -> Self {
+    pub fn new(profile: Profile, token: Option<String>) -> Self {
         let agent = ureq::AgentBuilder::new()
-            .user_agent(kind.user_agent())
+            .user_agent(profile.user_agent)
             .timeout(std::time::Duration::from_secs(30))
             .build();
         Self {
             agent,
-            kind,
+            profile,
             visitor: None,
             token,
         }
@@ -73,10 +109,13 @@ impl Innertube {
 
     fn context(&self) -> Value {
         let mut client = Map::new();
-        client.insert("clientName".into(), json!(self.kind.label()));
-        client.insert("clientVersion".into(), json!(self.kind.version()));
+        client.insert("clientName".into(), json!(self.profile.client_name));
+        client.insert("clientVersion".into(), json!(self.profile.version));
         client.insert("hl".into(), json!("fr"));
         client.insert("gl".into(), json!("FR"));
+        if let Some(platform) = self.profile.platform {
+            client.insert("platform".into(), json!(platform));
+        }
         if let Some(visitor) = &self.visitor {
             client.insert("visitorData".into(), json!(visitor));
         }
@@ -93,10 +132,10 @@ impl Innertube {
             .agent
             .post(&url)
             .set("Content-Type", "application/json")
-            .set("X-YouTube-Client-Name", self.kind.client_name_header())
-            .set("X-YouTube-Client-Version", &self.kind.version());
+            .set("X-YouTube-Client-Name", self.profile.header_name)
+            .set("X-YouTube-Client-Version", &self.profile.version);
 
-        if self.kind == ClientKind::Web {
+        if self.profile.family == Family::Web {
             request = request
                 .set("Origin", "https://www.youtube.com")
                 .set("Referer", "https://www.youtube.com/");

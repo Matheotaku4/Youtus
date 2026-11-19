@@ -6,7 +6,7 @@ mod probe;
 use std::path::PathBuf;
 
 use anyhow::{bail, Result};
-use innertube::{ClientKind, Innertube};
+use innertube::{Family, Innertube};
 use serde_json::{json, Value};
 
 const USAGE: &str = "\
@@ -19,7 +19,7 @@ OPTIONS:
     --client-secret-file <json>
                          JSON téléchargé depuis la console (client_id + client_secret)
     --client-id <id>     id seul ; le secret peut venir de YOUTUS_OAUTH_CLIENT_SECRET
-    --client <web|tv>    contexte InnerTube testé (défaut : web puis tv)
+    --client <web|tv>    famille de contextes testée (défaut : tous, TV d'abord utile)
     --video <id>         vidéo de test (défaut : dQw4w9WgXcQ)
     --token-file <path>  jeton par défaut : $XDG_DATA_HOME/youtus/oauth.json
     --json <path>        écrit le rapport brut en JSON
@@ -31,7 +31,7 @@ OPTIONS:
 struct Args {
     client_id: Option<String>,
     client_secret_file: Option<PathBuf>,
-    client: Option<ClientKind>,
+    client: Option<Family>,
     video: String,
     token_file: PathBuf,
     json_out: Option<PathBuf>,
@@ -66,8 +66,8 @@ fn parse_args() -> Result<Args> {
             "--client-secret-file" => args.client_secret_file = Some(PathBuf::from(value()?)),
             "--client" => {
                 args.client = Some(match value()?.as_str() {
-                    "web" => ClientKind::Web,
-                    "tv" => ClientKind::Tv,
+                    "web" => Family::Web,
+                    "tv" => Family::Tv,
                     other => bail!("--client attend `web` ou `tv`, reçu `{other}`"),
                 })
             }
@@ -141,35 +141,39 @@ fn run() -> Result<()> {
         }
     };
 
-    let candidates: Vec<ClientKind> = match args.client {
-        Some(kind) => vec![kind],
-        None => vec![ClientKind::Web, ClientKind::Tv],
-    };
-
     let mut authenticated: Option<(Innertube, AccountInfo)> = None;
     let mut attempts = Vec::new();
 
-    for kind in candidates {
-        let mut yt = Innertube::new(kind, Some(access_token.clone()));
+    for profile in innertube::profiles(args.client) {
+        let label = profile.label;
+        let mut yt = Innertube::new(profile, Some(access_token.clone()));
         match probe::probe_account(&mut yt) {
             Ok(account) if account.name.is_some() => {
-                attempts.push((kind, format!("authentifié ({})", account.name.clone().unwrap())));
+                attempts.push((label, format!("authentifié ({})", account.name.clone().unwrap())));
                 authenticated = Some((yt, AccountInfo { name: account.name }));
                 break;
             }
-            Ok(_) => attempts.push((kind, "réponse sans compte (session anonyme ?)".to_owned())),
-            Err(error) => attempts.push((kind, format!("{error:#}"))),
+            Ok(_) => attempts.push((label, "réponse sans compte (session anonyme ?)".to_owned())),
+            Err(error) => attempts.push((label, format!("{error:#}"))),
         }
     }
 
+    for (label, detail) in &attempts {
+        let status = if detail.starts_with("authentifié") { "✓" } else { "✗" };
+        eprintln!("{status} {label} : {detail}");
+    }
+
     let Some((mut yt, account)) = authenticated else {
-        for (kind, detail) in &attempts {
-            eprintln!("✗ {} : {detail}", kind.label());
-        }
-        bail!("aucun contexte InnerTube n'a accepté le jeton Bearer");
+        bail!(
+            "aucun contexte InnerTube n'a accepté le jeton Bearer. \
+             Le jeton du device flow est lié au client TV : si tous les profils TV \
+             échouent, c'est le client OAuth lui-même qui n'est pas reconnu par YouTube \
+             (utilise alors les identifiants TV publics, cf. spec §5.1)."
+        );
     };
 
-    let client_label = yt.kind.label();
+    let client_label = yt.profile.label;
+    eprintln!("→ contexte retenu : {client_label}");
     println!("• client {client_label} authentifié : {}", account.name.clone().unwrap_or_default());
     println!("• vidéo de test : {}\n", args.video);
 
