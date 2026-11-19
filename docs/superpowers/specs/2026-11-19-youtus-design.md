@@ -174,6 +174,8 @@ pub trait Player {
 4. Stocker **uniquement le refresh token** dans le keyring ; access token en mémoire, rafraîchi à 80 % de sa durée.
 5. Requêtes personnalisées : `Authorization: Bearer <access_token>`.
 
+**Le client_secret n'est pas optionnel.** La documentation Google du device flow (« OAuth 2.0 for TV and Limited-Input Device Applications ») liste `client_secret` parmi les paramètres obligatoires du `/token`, y compris pour un client « TV et périphériques à entrée limitée ». Ce n'est pas un secret utilisateur : il accompagne chaque appareil et ne protège rien (YouTube.js embarque le couple). Conséquences pour M1 : l'app importe le JSON de credentials téléchargé depuis la console (stocké en 0600 hors dépôt) ou utilise un couple embarqué à la compilation ; dans les deux cas il n'est jamais journalisé ni affiché, et `invalid_grant` sur le refresh redéclenche le device flow.
+
 ### 5.2 Cookies (déblocage optionnel)
 
 - Import d'un `cookies.txt` (Netscape) exporté par l'utilisateur — pas de déchiffrement de profil Chromium.
@@ -201,13 +203,13 @@ La sonde de capacités s'exécute au login et à la demande : `account/account_m
 `spikes/s1-oauth` est un binaire sans GUI et sans libmpv : device flow, puis mesure des capacités réelles. C'est la **seule source de vérité** pour les cellules de §5.3.
 
 ```bash
-YOUTUS_OAUTH_CLIENT_ID=<id client TV> cargo run --release \
-  --manifest-path spikes/s1-oauth/Cargo.toml -- \
+cargo run --release --manifest-path spikes/s1-oauth/Cargo.toml -- \
+  --client-secret-file ~/Téléchargements/client_secret_….json \
   --markdown docs/superpowers/spikes/2026-11-19-s1-capabilities.md \
   --json /tmp/s1-report.json
 ```
 
-Création du client OAuth (une fois) : console Google Cloud → projet → activer « YouTube Data API v3 » → écran de consentement externe en mode test avec son compte en testeur → identifiant OAuth de type « TV et périphériques à entrée limitée ».
+Création du client OAuth (une fois) : console Google Cloud → projet → activer « YouTube Data API v3 » → écran de consentement externe en mode test avec son compte **dans les utilisateurs test** → identifiant OAuth de type « TV et périphériques à entrée limitée » → télécharger le JSON (il contient `client_id` + `client_secret`, tous deux requis au `/token`). Le JSON reste hors du dépôt ; `YOUTUS_OAUTH_CLIENT_ID` + `YOUTUS_OAUTH_CLIENT_SECRET` restent acceptés en repli.
 
 | Vérification | Endpoint | Critère de succès | Interprétation de l'échec |
 |---|---|---|---|

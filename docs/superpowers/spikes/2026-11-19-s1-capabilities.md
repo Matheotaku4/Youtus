@@ -3,8 +3,8 @@
 Statut : **à exécuter sur un compte réel**. Ce fichier est réécrit par la sonde :
 
 ```bash
-YOUTUS_OAUTH_CLIENT_ID=<id client TV> cargo run --release \
-  --manifest-path spikes/s1-oauth/Cargo.toml -- \
+cargo run --release --manifest-path spikes/s1-oauth/Cargo.toml -- \
+  --client-secret-file ~/Téléchargements/client_secret_….json \
   --markdown docs/superpowers/spikes/2026-11-19-s1-capabilities.md \
   --json /tmp/s1-report.json
 ```

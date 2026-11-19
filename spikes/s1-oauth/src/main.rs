@@ -16,7 +16,9 @@ USAGE:
     YOUTUS_OAUTH_CLIENT_ID=<id> s1-oauth [OPTIONS]
 
 OPTIONS:
-    --client-id <id>     client OAuth « TV et appareils à accès limité »
+    --client-secret-file <json>
+                         JSON téléchargé depuis la console (client_id + client_secret)
+    --client-id <id>     id seul ; le secret peut venir de YOUTUS_OAUTH_CLIENT_SECRET
     --client <web|tv>    contexte InnerTube testé (défaut : web puis tv)
     --video <id>         vidéo de test (défaut : dQw4w9WgXcQ)
     --token-file <path>  jeton par défaut : $XDG_DATA_HOME/youtus/oauth.json
@@ -28,6 +30,7 @@ OPTIONS:
 
 struct Args {
     client_id: Option<String>,
+    client_secret_file: Option<PathBuf>,
     client: Option<ClientKind>,
     video: String,
     token_file: PathBuf,
@@ -39,6 +42,7 @@ struct Args {
 fn parse_args() -> Result<Args> {
     let mut args = Args {
         client_id: std::env::var("YOUTUS_OAUTH_CLIENT_ID").ok(),
+        client_secret_file: None,
         client: None,
         video: "dQw4w9WgXcQ".to_owned(),
         token_file: oauth::default_token_path(),
@@ -59,6 +63,7 @@ fn parse_args() -> Result<Args> {
                 std::process::exit(0);
             }
             "--client-id" => args.client_id = Some(value()?),
+            "--client-secret-file" => args.client_secret_file = Some(PathBuf::from(value()?)),
             "--client" => {
                 args.client = Some(match value()?.as_str() {
                     "web" => ClientKind::Web,
@@ -94,17 +99,16 @@ fn main() {
 fn run() -> Result<()> {
     let args = parse_args()?;
 
-    let Some(client_id) = args.client_id.clone() else {
-        bail!(
-            "YOUTUS_OAUTH_CLIENT_ID manquant.\n\
-             Crée un client « TV et appareils à accès limité » sur \
-             https://console.cloud.google.com/apis/credentials :\n\
-             1. nouveau projet → API « YouTube Data API v3 » activée ;\n\
-             2. écran de consentement OAuth (externe, mode test, ton compte en testeur) ;\n\
-             3. créer un identifiant OAuth → type « TV et périphériques à entrée limitée » ;\n\
-             4. relance : YOUTUS_OAUTH_CLIENT_ID=<id> cargo run --release"
-        );
-    };
+    let credentials = resolve_credentials(&args)?;
+    let client_id = credentials.client_id.clone();
+    println!(
+        "• client {client_id} — client_secret {}",
+        if credentials.client_secret.is_some() {
+            "fourni (jamais écrit sur disque)"
+        } else {
+            "absent"
+        }
+    );
 
     let stored = oauth::load_token(&args.token_file)
         .filter(|token| token.client_id == client_id);
@@ -112,15 +116,15 @@ fn run() -> Result<()> {
     let access_token = match stored {
         Some(token) => {
             println!("• jeton trouvé dans {}, rafraîchissement…", args.token_file.display());
-            oauth::refresh(&client_id, &token.refresh_token)?.access_token
+            oauth::refresh(&credentials, &token.refresh_token)?.access_token
         }
         None => {
-            let code = oauth::request_device_code(&client_id)?;
+            let code = oauth::request_device_code(&credentials)?;
             println!(
                 "\n→ Ouvre {} et saisis le code : {}\n  (expire dans {} s)\n",
                 code.verification_url, code.user_code, code.expires_in
             );
-            let token = oauth::poll_token(&client_id, &code)?;
+            let token = oauth::poll_token(&credentials, &code)?;
             let refresh_token = token
                 .refresh_token
                 .clone()
@@ -315,6 +319,37 @@ fn run() -> Result<()> {
 
 struct AccountInfo {
     name: Option<String>,
+}
+
+fn resolve_credentials(args: &Args) -> Result<oauth::Credentials> {
+    if let Some(path) = &args.client_secret_file {
+        return oauth::Credentials::from_json_path(path).map_err(|error| {
+            anyhow::anyhow!(
+                "identifiants OAuth illisibles dans {} : {error:#}",
+                path.display()
+            )
+        });
+    }
+
+    let Some(client_id) = &args.client_id else {
+        bail!(
+            "aucun client OAuth fourni.\n\
+             Crée un client « TV et périphériques à entrée limitée » sur \
+             https://console.cloud.google.com/apis/credentials :\n\
+             1. nouveau projet → activer « YouTube Data API v3 » ;\n\
+             2. écran de consentement (externe, mode test, ton compte dans les utilisateurs test) ;\n\
+             3. identifiant OAuth de type « TV et périphériques à entrée limitée » ;\n\
+             4. relance avec --client-secret-file <le JSON téléchargé> (recommandé),\n\
+                ou --client-id <id> + YOUTUS_OAUTH_CLIENT_SECRET=<secret>."
+        );
+    };
+
+    Ok(oauth::Credentials {
+        client_id: client_id.clone(),
+        client_secret: std::env::var("YOUTUS_OAUTH_CLIENT_SECRET")
+            .ok()
+            .filter(|secret| !secret.is_empty()),
+    })
 }
 
 fn flag(value: bool) -> &'static str {

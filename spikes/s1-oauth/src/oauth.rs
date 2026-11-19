@@ -20,6 +20,46 @@ pub struct DeviceCode {
     pub expires_in: u64,
 }
 
+#[derive(Clone, Debug)]
+pub struct Credentials {
+    pub client_id: String,
+    pub client_secret: Option<String>,
+}
+
+impl Credentials {
+    /// Accepte le JSON livré par la console (`installed`, `web`, `tv`, `device`)
+    /// comme un objet plat `{client_id, client_secret}`.
+    pub fn from_json(text: &str) -> Result<Self> {
+        let value: Value = serde_json::from_str(text).context("JSON d'identifiants invalide")?;
+        let node = ["installed", "web", "tv", "device", "client"]
+            .iter()
+            .find_map(|key| value.get(*key))
+            .unwrap_or(&value);
+
+        let client_id = node
+            .get("client_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("`client_id` absent du JSON"))?
+            .to_owned();
+        let client_secret = node
+            .get("client_secret")
+            .and_then(Value::as_str)
+            .filter(|secret| !secret.is_empty())
+            .map(str::to_owned);
+
+        Ok(Self {
+            client_id,
+            client_secret,
+        })
+    }
+
+    pub fn from_json_path(path: &Path) -> Result<Self> {
+        let text = fs::read_to_string(path)
+            .with_context(|| format!("lecture de {}", path.display()))?;
+        Self::from_json(&text)
+    }
+}
+
 pub struct Token {
     pub access_token: String,
     pub refresh_token: Option<String>,
@@ -94,13 +134,13 @@ fn post_form(url: &str, pairs: &[(&str, &str)]) -> Result<Value> {
     }
 }
 
-pub fn request_device_code(client_id: &str) -> Result<DeviceCode> {
+pub fn request_device_code(credentials: &Credentials) -> Result<DeviceCode> {
     let device_id = format!(
         "youtus-s1-{}",
         std::process::id()
     );
     let pairs = [
-        ("client_id", client_id),
+        ("client_id", credentials.client_id.as_str()),
         ("scope", SCOPE),
         ("device_id", device_id.as_str()),
         ("device_model", "ytlr::"),
@@ -146,7 +186,7 @@ pub fn request_device_code(client_id: &str) -> Result<DeviceCode> {
     })
 }
 
-pub fn poll_token(client_id: &str, code: &DeviceCode) -> Result<Token> {
+pub fn poll_token(credentials: &Credentials, code: &DeviceCode) -> Result<Token> {
     let deadline = Instant::now() + Duration::from_secs(code.expires_in);
     let mut interval = code.interval.max(1);
 
@@ -156,17 +196,19 @@ pub fn poll_token(client_id: &str, code: &DeviceCode) -> Result<Token> {
         }
         std::thread::sleep(Duration::from_secs(interval));
 
-        let value = post_form(
-            TOKEN_URL,
-            &[
-                ("client_id", client_id),
-                ("device_code", code.device_code.as_str()),
-                (
-                    "grant_type",
-                    "urn:ietf:params:oauth:grant-type:device_code",
-                ),
-            ],
-        )?;
+        let mut pairs = vec![
+            ("client_id", credentials.client_id.as_str()),
+            ("device_code", code.device_code.as_str()),
+            (
+                "grant_type",
+                "urn:ietf:params:oauth:grant-type:device_code",
+            ),
+        ];
+        if let Some(secret) = &credentials.client_secret {
+            pairs.push(("client_secret", secret.as_str()));
+        }
+
+        let value = post_form(TOKEN_URL, &pairs)?;
 
         if let Some(access) = value.get("access_token").and_then(Value::as_str) {
             return Ok(Token {
@@ -199,15 +241,16 @@ pub fn poll_token(client_id: &str, code: &DeviceCode) -> Result<Token> {
     }
 }
 
-pub fn refresh(client_id: &str, refresh_token: &str) -> Result<Token> {
-    let value = post_form(
-        TOKEN_URL,
-        &[
-            ("client_id", client_id),
-            ("refresh_token", refresh_token),
-            ("grant_type", "refresh_token"),
-        ],
-    )?;
+pub fn refresh(credentials: &Credentials, refresh_token: &str) -> Result<Token> {
+    let mut pairs = vec![
+        ("client_id", credentials.client_id.as_str()),
+        ("refresh_token", refresh_token),
+        ("grant_type", "refresh_token"),
+    ];
+    if let Some(secret) = &credentials.client_secret {
+        pairs.push(("client_secret", secret.as_str()));
+    }
+    let value = post_form(TOKEN_URL, &pairs)?;
 
     if let Some(access) = value.get("access_token").and_then(Value::as_str) {
         return Ok(Token {
@@ -239,11 +282,11 @@ fn describe_error(code: &str, description: &str) -> String {
             .to_owned();
     }
     if description.contains("client_secret") {
-        return "le client OAuth utilisé est confidentiel (type « Application Web » ou \
-                « Desktop » avec secret) : Google réclame un client_secret pour échanger le \
-                device code. Le device flow exige un client public « TV et périphériques à \
-                entrée limitée », qui n'a pas de secret ; recrée-en un de ce type et relance \
-                avec son identifiant brut (sans suffixe .apps.googleusercontent.com en double)."
+        return "Google réclame le client_secret pour échanger le device code — c'est le cas \
+                de tous les types de clients, « TV et périphériques à entrée limitée » \
+                compris. Télécharge le JSON du client (console → Credentials → ton client) \
+                et passe son chemin avec --client-secret-file : il ne doit jamais être collé \
+                dans un message ni committé."
             .to_owned();
     }
     format!("autorisation refusée : {code} — {description}")
@@ -251,15 +294,37 @@ fn describe_error(code: &str, description: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{describe_error, encode};
+    use super::{describe_error, encode, Credentials};
 
     #[test]
-    fn explique_le_client_confidentiel() {
+    fn lit_le_json_installed() {
+        let credentials = Credentials::from_json(
+            r#"{"installed":{"client_id":"abc.apps.googleusercontent.com","client_secret":"s3cr3t"}}"#,
+        )
+        .unwrap();
+        assert_eq!(credentials.client_id, "abc.apps.googleusercontent.com");
+        assert_eq!(credentials.client_secret.as_deref(), Some("s3cr3t"));
+    }
+
+    #[test]
+    fn lit_un_json_plat_sans_secret() {
+        let credentials = Credentials::from_json(r#"{"client_id":"abc"}"#).unwrap();
+        assert_eq!(credentials.client_id, "abc");
+        assert_eq!(credentials.client_secret, None);
+    }
+
+    #[test]
+    fn refuse_un_json_sans_client_id() {
+        assert!(Credentials::from_json(r#"{"web":{}}"#).is_err());
+    }
+
+    #[test]
+    fn explique_le_secret_manquant() {
         let message = describe_error(
             "invalid_request",
             "Missing required parameter: client_secret",
         );
-        assert!(message.contains("TV et périphériques à entrée limitée"));
+        assert!(message.contains("--client-secret-file"));
         assert!(!message.contains("autorisation refusée"));
     }
 
