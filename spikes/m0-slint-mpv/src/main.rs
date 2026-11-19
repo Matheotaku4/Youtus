@@ -79,7 +79,10 @@ fn main() -> anyhow::Result<()> {
                                 v.fbo.0.get() as i32,
                                 gl::VIDEO_W as i32,
                                 gl::VIDEO_H as i32,
-                                true,
+                                // flip=false : mpv écrit la texture avec l'origine en
+                                // haut, convention attendue par Slint (TopLeft).
+                                // Avec true, l'image s'affiche à l'envers.
+                                false,
                             ) {
                                 eprintln!("render: {e}");
                             }

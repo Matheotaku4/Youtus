@@ -92,7 +92,7 @@
    - créer `Mpv` (`Mpv::with_initializer`) puis `mpv.create_render_context([ApiType(OpenGl), InitParams(OpenGLInitParams { get_proc_address, ctx })])` ;
    - `BorrowedOpenGLTextureBuilder::new_gl_2d_rgba_texture(texture_id, size).build()` → `slint::Image` affectée à la page Watch.
 3. `RenderContext::set_update_callback(|| pending.store(true))` — le callback vient d'un thread mpv : **ni API mpv, ni API Slint** dedans. Un `slint::Timer` de 8 ms, côté UI, consomme le drapeau et appelle `request_redraw()`.
-4. `RenderingState::BeforeRendering` : si `frame_pending`, `render_context.render::<LoaderCtx>(fbo_id, 1280, 720, true)` puis `report_swap()`.
+4. `RenderingState::BeforeRendering` : si `frame_pending`, `render_context.render::<LoaderCtx>(fbo_id, 1280, 720, false)` puis `report_swap()`. **`flip = false`** : avec `true`, mpv écrit la texture avec l'origine en bas (convention OpenGL) et Slint l'affiche à l'envers, puisque `BorrowedOpenGLTextureOrigin::TopLeft` est son défaut. Vérifié à l'écran sur KDE/Wayland.
 5. `RenderingState::RenderingTeardown` : drop du render context avant le contexte mpv, puis texture/FBO.
 
 La taille de texture est fixe en v1 (le scaling est fait par Slint). Le redimensionnement du FBO est une optimisation ultérieure.
@@ -105,6 +105,8 @@ La taille de texture est fixe en v1 (le scaling est fait par Slint). Le redimens
 - `RenderContext::render` a un générique `GLContext` non inférable : appel en turbofish `render::<LoaderCtx>(...)`, avec le **même** type que lors de `create_render_context`.
 - `OpenGLInitParams::get_proc_address` est un pointeur de fonction `fn(&GLContext, &str) -> *mut c_void` : le loader Slint (`&dyn Fn(&CStr) -> *const c_void`) doit être enveloppé dans une structure et convertir `&str` → `CString`.
 - Stack validée : Rust 1.100, Slint 1.19.0, libmpv2 7.0.1, libmpv 0.37.0.
+- Géométrie Slint : `x` et `y` sont **centrés par défaut** (`x = (parent.width - self.width) / 2` d'après la référence « Geometry »), d'où un remplissage de barre de progression qui paraît centré. Toujours poser `x: 0` sur la piste, le remplissage et la `TouchArea`. Corollaire pour tous les composants Youtus : ne jamais compter sur la position implicite d'un enfant hors layout.
+- Mesures de référence (M0, KDE/Wayland, NVIDIA 8 Go) : 60 fps, 0,6 ms/frame, 6 % CPU, 424 Mo RSS pour une texture 1280×720.
 
 ### 4.3 Options mpv imposées
 
@@ -324,7 +326,7 @@ Secrets (keyring `youtus` / Secret Service) : `oauth_refresh_token`, `cookies_ne
 |---|---|
 | UI au repos | 60 fps, < 3 % CPU |
 | UI pendant lecture 1080p60 | 60 fps, décodage matériel (`hwdec=auto-safe`) |
-| RAM totale 1 fenêtre + lecture | < 350 Mo |
+| RAM totale 1 fenêtre + lecture | < 350 Mo (mesuré M0 : 424 Mo, marge à trouver en M1) |
 | Démarrage à froid (UI affichée) | < 800 ms |
 | Accueil affiché (réseau, cache froid) | < 1,5 s |
 

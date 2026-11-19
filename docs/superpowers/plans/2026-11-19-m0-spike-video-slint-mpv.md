@@ -489,7 +489,8 @@ fn main() -> anyhow::Result<()> {
                             v.fbo.0.get() as i32,
                             gl::VIDEO_W as i32,
                             gl::VIDEO_H as i32,
-                            true,
+                            // flip=false : origine en haut, convention de Slint
+                            false,
                         ) {
                             eprintln!("render: {e}");
                         }

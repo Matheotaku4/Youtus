@@ -76,6 +76,7 @@ export component AppWindow inherits Window {
 
                 Rectangle {
                     Rectangle {
+                        x: 0;
                         y: (parent.height - 4px) / 2;
                         height: 4px;
                         width: parent.width;
@@ -83,7 +84,10 @@ export component AppWindow inherits Window {
                         background: #3f3f3f;
                     }
 
+                    // Le remplissage doit être ancré à gauche : sans `x` explicite,
+                    // il se centre dans la piste au lieu de partir du début.
                     Rectangle {
+                        x: 0;
                         y: (parent.height - 4px) / 2;
                         height: 4px;
                         width: parent.width * root.progress;
@@ -92,6 +96,9 @@ export component AppWindow inherits Window {
                     }
 
                     bar := TouchArea {
+                        x: 0;
+                        width: parent.width;
+                        height: parent.height;
                         clicked => {
                             if (bar.width > 0) {
                                 root.seek-to(bar.mouse-x / bar.width);
