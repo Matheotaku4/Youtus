@@ -231,6 +231,13 @@ pub fn refresh(client_id: &str, refresh_token: &str) -> Result<Token> {
 
 /// Traduit les erreurs OAuth qui ont une cause de configuration précise.
 fn describe_error(code: &str, description: &str) -> String {
+    if code == "access_denied" {
+        return "refus d'accès (access_denied). Cause la plus fréquente en mode Test : \
+                le compte Google utilisé dans le navigateur n'est pas listé dans \
+                Google Auth Platform → Audience → Utilisateurs test. Ajoute-le (ou publie \
+                l'application), puis relance en te connectant avec ce même compte."
+            .to_owned();
+    }
     if description.contains("client_secret") {
         return "le client OAuth utilisé est confidentiel (type « Application Web » ou \
                 « Desktop » avec secret) : Google réclame un client_secret pour échanger le \
@@ -259,9 +266,15 @@ mod tests {
     #[test]
     fn garde_les_autres_erreurs() {
         assert_eq!(
-            describe_error("access_denied", "user denied"),
-            "autorisation refusée : access_denied — user denied"
+            describe_error("invalid_grant", "Token has been expired"),
+            "autorisation refusée : invalid_grant — Token has been expired"
         );
+    }
+
+    #[test]
+    fn explique_le_mode_test() {
+        let message = describe_error("access_denied", "");
+        assert!(message.contains("Utilisateurs test"));
     }
 
     #[test]
