@@ -185,11 +185,14 @@ pub fn poll_token(client_id: &str, code: &DeviceCode) -> Result<Token> {
                 continue;
             }
             Some(other) => bail!(
-                "autorisation refusée : {other} — {}",
-                value
-                    .get("error_description")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
+                "{}",
+                describe_error(
+                    other,
+                    value
+                        .get("error_description")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                )
             ),
             None => bail!("réponse token inattendue : {value}"),
         }
@@ -226,9 +229,40 @@ pub fn refresh(client_id: &str, refresh_token: &str) -> Result<Token> {
     )
 }
 
+/// Traduit les erreurs OAuth qui ont une cause de configuration précise.
+fn describe_error(code: &str, description: &str) -> String {
+    if description.contains("client_secret") {
+        return "le client OAuth utilisé est confidentiel (type « Application Web » ou \
+                « Desktop » avec secret) : Google réclame un client_secret pour échanger le \
+                device code. Le device flow exige un client public « TV et périphériques à \
+                entrée limitée », qui n'a pas de secret ; recrée-en un de ce type et relance \
+                avec son identifiant brut (sans suffixe .apps.googleusercontent.com en double)."
+            .to_owned();
+    }
+    format!("autorisation refusée : {code} — {description}")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::encode;
+    use super::{describe_error, encode};
+
+    #[test]
+    fn explique_le_client_confidentiel() {
+        let message = describe_error(
+            "invalid_request",
+            "Missing required parameter: client_secret",
+        );
+        assert!(message.contains("TV et périphériques à entrée limitée"));
+        assert!(!message.contains("autorisation refusée"));
+    }
+
+    #[test]
+    fn garde_les_autres_erreurs() {
+        assert_eq!(
+            describe_error("access_denied", "user denied"),
+            "autorisation refusée : access_denied — user denied"
+        );
+    }
 
     #[test]
     fn encode_les_scopes() {
