@@ -187,15 +187,19 @@ pub trait Player {
 
 **Mesuré le 2026-11-19** (S1, compte réel, device flow complet) :
 
-| Capacité | OAuth (client personnel) | Cookies | Mesurée par |
-|---|---|---|---|
-| API Data v3 (chaînes, abonnements, playlists, notes) | ✅ 200 | ✅ | `channels?mine=true` |
-| Accueil / Abonnements / Historique / Playlists (InnerTube) | ❌ 400 `INVALID_ARGUMENT` | à mesurer (S2) | `browse FEwhat_to_watch` / `FEhistory` |
-| Like, dislike, abonnement (InnerTube) | ❌ 400 | à mesurer (S2) | `like/like`, `subscription/subscribe` |
-| Lire / publier un commentaire | ❌ | à mesurer (S2) | `next` + continuation |
-| Beacons de progression | non mesurable sans InnerTube | à mesurer (S2) | `playbackTracking` |
+| Capacité | Mesure | Preuve |
+|---|---|---|
+| Authentification InnerTube | ✅ | accueil : 20 `tileRenderer` avec jeton, **0** sans |
+| Accueil personnalisé | ✅ | 20 tuiles |
+| Historique | ✅ | 15 identifiants vidéo distincts |
+| Like | ✅ | `likeStatus = LIKE`, état restauré |
+| Lire les commentaires | ✅ | continuation + 20 `commentThreadRenderer` |
+| `playbackTracking` | ⏸ non conclu | `/player` `UNPLAYABLE` depuis l'IP de datacenter, **même en anonyme** |
+| `createCommentParams` | ❌ | absent en TV comme en WEB anonyme |
 
-Le jeton est valide — l'API Data v3 rend la chaîne du compte — mais InnerTube le refuse dans les quatre profils testés (WEB, TVHTML5 7.x, 5.x downgraded, 7.20250209), alors que les mêmes requêtes **sans** Bearer répondent 200/401. Autrement dit : un client OAuth créé par un tiers n'est pas reconnu par `youtubei/v1`. Les clients qui fonctionnent (YouTube.js, Dmitry's WP YouTube) s'appuient tous sur le même couple public d'identifiants TV, pas sur un client personnel. Le détail est dans `spikes/2026-11-19-s1-capabilities.md` et la décision est ouverte (§5.5).
+Le 400 `INVALID_ARGUMENT` qui avait fait condamner l'OAuth venait de `account/account_menu`, endpoint qui refuse **aussi le jeton TV public de Google**. `browse`, `like` et `next` acceptent le bearer sans problème : la sonde s'authentifie désormais par l'accueil personnalisé, pas par cet endpoint. Le jeton reste lié au type de client (400 en WEB, 200 en TVHTML5), ce qui n'a rien d'anormal.
+
+Conséquence d'architecture, indépendante du fournisseur d'identifiants : le client TV ne donne ni flux vidéo ni `createCommentParams`. La lecture et la publication de commentaires exigent une session **WEB** (cookies). C'est ce qui justifie `AuthStrategy` (§5.5).
 
 La matrice affichée dans Réglages est celle **mesurée par compte** ; tant qu'un compte n'a pas été sondé, l'app affiche « non vérifié ». L'UI grise les actions indisponibles avec une infobulle explicite.
 
@@ -214,30 +218,34 @@ Création du client OAuth (une fois) : console Google Cloud → projet → activ
 
 | Vérification | Endpoint | Critère de succès | Interprétation de l'échec |
 |---|---|---|---|
-| Authentification Bearer | `account/account_menu` | `accountName` présent | le jeton TV n'est pas accepté par ce contexte client |
-| Accueil personnalisé | `browse FEwhat_to_watch` | ≥ 1 `videoRenderer` | feed anonyme ou `feedNudgeRenderer` : personnalisation refusée |
-| Historique | `browse FEhistory` | ≥ 1 `videoRenderer` | scope insuffisant ou compte neuf |
+| Authentification Bearer | `browse FEwhat_to_watch` | ≥ 1 tuile (`videoRenderer`, `lockupViewModel`, `tileRenderer`) | session anonyme : le jeton n'est pas accepté par ce contexte |
+| Accueil personnalisé | `browse FEwhat_to_watch` | ≥ 1 tuile | feed anonyme ou `feedNudgeRenderer` : personnalisation refusée |
+| Historique | `browse FEhistory` | ≥ 1 identifiant vidéo (`videoId`/`contentId`) | scope insuffisant ou compte neuf |
 | Like | `like/like` puis `like/removelike` | `likeStatus = LIKE` | mutation refusée → bouton grisé en UI |
 | Progression | `player` avec `signatureTimestamp` | `videostatsWatchtimeUrl` **et** `videostatsPlaybackUrl` | pas de progression possible sans cookies |
 | Commenter | `next` sur la continuation commentaires | `createCommentEndpoint.createCommentParams` non vide | publication impossible en OAuth → cookies requis |
 
 Protocole et pièges :
 
-- `signatureTimestamp` est extrait du player JS courant (HTML watch → `jsUrl` → `signatureTimestamp:<n>`) ; sans lui, `/player` n'inclut pas `playbackTracking`. La sonde distingue « bloc absent avec sts valide » de « sts introuvable » au lieu de conclure à tort.
+- `signatureTimestamp` est extrait du player du client interrogé : `base.js` pour WEB, `tv-player-ias.js` pour TV (HTML `/tv` → `/s/player/<hash>/tv-player-ias.vflset/…`). Sans lui, `/player` n'inclut pas `playbackTracking` ; avec le sts du mauvais client, YouTube répond « La page doit être actualisée ».
+- `account/account_menu` n'est **pas** un test d'authentification : il renvoie 400 même avec un jeton valide. Il n'est utilisé que pour lire le nom du compte, en meilleur effort.
 - Le like est **restauré** systématiquement (`like/removelike`) ; `--skip-like` supprime toute mutation.
 - Deux contextes sont essayés (`WEB`, puis `TVHTML5` si `--client` n'est pas fixé) : le jeton vient d'un client TV et n'est pas garanti accepté par `WEB`. Le contexte qui répond est consigné dans le rapport.
 - Le refresh token est écrit dans `$XDG_DATA_HOME/youtus/oauth.json` en 0600 (repli `~/.local/share/youtus/`), jamais dans le dépôt ni dans un log.
 - Vidéo témoin par défaut `dQw4w9WgXcQ` (commentaires ouverts, likeable), remplaçable par `--video`.
 - La sonde vérifie d'abord le jeton sur l'API Data v3 (`channels?mine=true`) : 200 prouve que l'échec d'InnerTube vient du client, pas de l'authentification.
 
-### 5.5 Décision d'authentification issue de S1
+### 5.5 Authentification : ce que S1 impose
 
-Mesure : OAuth maison → API Data v3 ✅, InnerTube ❌ (400 quel que soit le contexte). Deux voies, non tranchées à ce stade :
+Le client OAuth personnel n'est pas disqualifié — le 400 venait d'un endpoint cassé, pas du jeton — et le couple TV public rend l'accueil, l'historique et le like. Le player et la publication de commentaires, eux, restent hors de portée du client TV.
 
-1. **Identifiants TV publics** (ce que fait YouTube.js) : InnerTube authentifié tout de suite, au prix d'un couple d'identifiants Google rotatif et d'un client qui n'est pas le nôtre.
-2. **Cookies pour InnerTube + OAuth pour l'API Data v3** : aucune dépendance à un client tiers, mais `cookies.txt` obligatoire pour l'accueil personnalisé, l'historique, le like et la progression.
+Décision de conception, indépendante du fournisseur d'identifiants :
 
-Tant que la décision n'est pas prise, M1 doit rester bâti sur une couche `youtus-yt` qui reçoit un `AuthStrategy` (`Bearer`, `Sapisid`, `Anonymous`) : les deux voies partagent les mêmes endpoints et seule l'en-tête change.
+- `youtus-yt` reçoit une `AuthStrategy` : `Anonymous`, `Bearer { access_token }`, `Sapisid { cookie }`.
+- `Bearer` couvre accueil, historique, like, abonnements. Il vient du device flow (client personnel) ou, en repli, du couple TV public.
+- `Sapisid` (cookies importés) est la seule voie pour le player complet (`playbackTracking`) et la publication de commentaires.
+- L'app affiche la matrice **mesurée par compte** et grise ce qui n'est pas disponible, au lieu de promettre des fonctions qui échoueront au clic.
+- Le profil client est choisi **par capacité**, pas globalement : TVHTML5 pour les feeds OAuth, WEB pour les cookies et le player.
 
 ---
 

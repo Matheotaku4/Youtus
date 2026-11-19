@@ -154,28 +154,32 @@ fn run() -> Result<()> {
     for profile in innertube::profiles(args.client) {
         let label = profile.label;
         let mut yt = Innertube::new(profile, Some(access_token.clone()));
-        match probe::probe_account(&mut yt) {
-            Ok(account) if account.name.is_some() => {
-                attempts.push((label, format!("authentifié ({})", account.name.clone().unwrap())));
-                authenticated = Some((yt, AccountInfo { name: account.name }));
+        match probe::probe_auth(&mut yt) {
+            Ok(auth) => {
+                attempts.push((
+                    label,
+                    format!(
+                        "session active ({} tuiles, {} entrées d'historique)",
+                        auth.videos, auth.history
+                    ),
+                ));
+                authenticated = Some((yt, AccountInfo { name: auth.account }));
                 break;
             }
-            Ok(_) => attempts.push((label, "réponse sans compte (session anonyme ?)".to_owned())),
             Err(error) => attempts.push((label, format!("{error:#}"))),
         }
     }
 
     for (label, detail) in &attempts {
-        let status = if detail.starts_with("authentifié") { "✓" } else { "✗" };
+        let status = if detail.starts_with("session active") { "✓" } else { "✗" };
         eprintln!("{status} {label} : {detail}");
     }
 
     let Some((mut yt, account)) = authenticated else {
         bail!(
-            "aucun contexte InnerTube n'a accepté le jeton Bearer. \
-             Le jeton du device flow est lié au client TV : si tous les profils TV \
-             échouent, c'est le client OAuth lui-même qui n'est pas reconnu par YouTube \
-             (utilise alors les identifiants TV publics, cf. spec §5.1)."
+            "aucun contexte InnerTube n'a rendu de session authentifiée (accueil et \
+             historique vides). Le jeton est peut-être lié à un autre client, ou le \
+             compte n'a aucun historique."
         );
     };
 

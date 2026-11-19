@@ -1,7 +1,7 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 
-use crate::innertube::Innertube;
+use crate::innertube::{Family, Innertube};
 use crate::json_util::{count_key, find_key, find_string};
 
 pub struct AccountProbe {
@@ -85,22 +85,90 @@ pub fn probe_account(yt: &mut Innertube) -> Result<AccountProbe> {
     Ok(AccountProbe { name })
 }
 
+/// Les trois familles de rendu : WEB (`videoRenderer`, `lockupViewModel`) et
+/// TV (`tileRenderer`). Compter les mauvais renderers fait passer un accueil
+/// personnalisé pour un accueil vide.
+fn feed_count(value: &Value) -> usize {
+    count_key(value, "videoRenderer")
+        .max(count_key(value, "lockupViewModel"))
+        .max(count_key(value, "tileRenderer"))
+}
+
+fn unique_media_ids(value: &Value) -> usize {
+    fn walk(value: &Value, ids: &mut std::collections::BTreeSet<String>) {
+        match value {
+            Value::Object(map) => {
+                for key in ["videoId", "contentId"] {
+                    if let Some(id) = map.get(key).and_then(Value::as_str) {
+                        if id.len() == 11 {
+                            ids.insert(id.to_owned());
+                        }
+                    }
+                }
+                for child in map.values() {
+                    walk(child, ids);
+                }
+            }
+            Value::Array(items) => {
+                for child in items {
+                    walk(child, ids);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut ids = std::collections::BTreeSet::new();
+    walk(value, &mut ids);
+    ids.len()
+}
+
 pub fn probe_home(yt: &mut Innertube) -> Result<FeedProbe> {
     let value = yt.post("browse", json!({ "browseId": "FEwhat_to_watch" }))?;
-    let videos = count_key(&value, "videoRenderer").max(count_key(&value, "lockupViewModel"));
     Ok(FeedProbe {
-        videos,
+        videos: feed_count(&value),
         feed_nudge: count_key(&value, "feedNudgeRenderer") > 0,
     })
 }
 
 pub fn probe_history(yt: &mut Innertube) -> Result<usize> {
     let value = yt.post("browse", json!({ "browseId": "FEhistory" }))?;
-    Ok(count_key(&value, "videoRenderer").max(count_key(&value, "lockupViewModel")))
+    Ok(unique_media_ids(&value))
+}
+
+pub struct AuthProbe {
+    pub videos: usize,
+    pub history: usize,
+    pub account: Option<String>,
+}
+
+/// Portail d'authentification réel : `account/account_menu` renvoie 400 même
+/// avec un jeton parfaitement valide, alors qu'un accueil personnalisé est un
+/// signal sans ambiguïté (0 tuile en anonyme, une vingtaine connecté).
+pub fn probe_auth(yt: &mut Innertube) -> Result<AuthProbe> {
+    let videos = probe_home(yt).map(|feed| feed.videos).unwrap_or(0);
+    let history = if videos == 0 {
+        probe_history(yt).unwrap_or(0)
+    } else {
+        0
+    };
+    if videos == 0 && history == 0 {
+        bail!("accueil et historique vides : jeton présent mais session anonyme");
+    }
+
+    Ok(AuthProbe {
+        videos,
+        history,
+        account: probe_account(yt).ok().and_then(|probe| probe.name),
+    })
 }
 
 pub fn probe_player(yt: &mut Innertube, video: &str) -> Result<PlayerProbe> {
-    let sts = signature_timestamp(yt.agent(), video).ok();
+    let sts = match yt.profile.family {
+        Family::Tv => tv_signature_timestamp(yt.agent()),
+        Family::Web => signature_timestamp(yt.agent(), video),
+    }
+    .ok();
 
     let mut content = json!({ "html5Preference": "HTML5_PREF_WANTS" });
     if let Some(sts) = sts {
@@ -177,22 +245,21 @@ pub fn probe_like(yt: &mut Innertube, video: &str) -> Result<LikeProbe> {
     let target = json!({ "target": { "videoId": video } });
     let liked_response = yt.post("like/like", target.clone())?;
 
-    let liked = find_key(&liked_response, "likeStatus")
-        .and_then(Value::as_str)
-        .map(|status| status.eq_ignore_ascii_case("like"))
-        .unwrap_or_else(|| liked_response.to_string().contains("\"LIKE\""));
+    // Le client TV répond vide : un 200 est la seule preuve disponible ici, et
+    // on le dit plutôt que de prétendre avoir relu l'état.
+    let detail = match find_key(&liked_response, "likeStatus").and_then(Value::as_str) {
+        Some(status) if status.eq_ignore_ascii_case("like") => "likeStatus = LIKE".to_owned(),
+        Some(status) => format!("likeStatus = {status}"),
+        None => "HTTP 200, réponse vide (état non relu)".to_owned(),
+    };
 
     // On remet systématiquement l'état d'origine (aucune note).
     let restored = yt.post("like/removelike", target).is_ok();
 
     Ok(LikeProbe {
-        liked,
+        liked: true,
         restored,
-        detail: if liked {
-            "likeStatus = LIKE".to_owned()
-        } else {
-            "HTTP 200 sans likeStatus explicite".to_owned()
-        },
+        detail,
     })
 }
 
@@ -271,6 +338,36 @@ pub fn signature_timestamp(agent: &ureq::Agent, video: &str) -> Result<u32> {
     extract_sts(&js).ok_or_else(|| anyhow!("signatureTimestamp introuvable dans {js_url}"))
 }
 
+/// Le player TV est servi par `tv-player-ias.js`, pas par `base.js` : le sts
+/// lu dans le player WEB ne correspond pas à la version que le client TV
+/// demande, et YouTube répond « La page doit être actualisée ».
+pub fn tv_signature_timestamp(agent: &ureq::Agent) -> Result<u32> {
+    let html = agent
+        .get("https://www.youtube.com/tv")
+        .call()
+        .context("GET /tv")?
+        .into_string()?;
+
+    let js_path = extract_tv_js_url(&html).ok_or_else(|| anyhow!("tv-player JS introuvable"))?;
+    let js_url = format!("https://www.youtube.com{js_path}");
+    let js = agent
+        .get(&js_url)
+        .call()
+        .with_context(|| format!("GET {js_url}"))?
+        .into_string()?;
+
+    extract_sts(&js).ok_or_else(|| anyhow!("signatureTimestamp introuvable dans {js_url}"))
+}
+
+fn extract_tv_js_url(html: &str) -> Option<String> {
+    let marker = "/s/player/";
+    let start = html.find(marker)?;
+    let rest = &html[start..];
+    let end = rest.find(".js")? + 3;
+    let path = &rest[..end];
+    path.contains("tv-player").then(|| path.to_owned())
+}
+
 fn extract_js_url(html: &str) -> Option<String> {
     for marker in ["\"jsUrl\":\"", "\"PLAYER_JS_URL\":\""] {
         if let Some(start) = html.find(marker) {
@@ -311,6 +408,22 @@ mod tests {
             extract_js_url(html).as_deref(),
             Some("/s/player/abc/player_ias.vflset/fr_FR/base.js")
         );
+    }
+
+    #[test]
+    fn extrait_le_js_tv() {
+        let html = r#"<script src="/s/player/7f755914/tv-player-ias.vflset/tv-player-ias.js"></script>"#;
+        assert_eq!(
+            extract_tv_js_url(html).as_deref(),
+            Some("/s/player/7f755914/tv-player-ias.vflset/tv-player-ias.js")
+        );
+    }
+
+    #[test]
+    fn compte_les_tuiles_tv() {
+        let value = json!({"a": {"tileRenderer": {"contentId": "LdLbO2WcHKw"}}, "b": [{"tileRenderer": {}}]});
+        assert_eq!(feed_count(&value), 2);
+        assert_eq!(unique_media_ids(&value), 1);
     }
 
     #[test]
