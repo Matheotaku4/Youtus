@@ -11,7 +11,7 @@
 
 | Sujet | Décision | Raison |
 |---|---|---|
-| UI | **Slint 1.18.x** (`backend-winit` + `renderer-femtovg`) | Choix utilisateur : Rust natif, binaire unique, léger |
+| UI | **Slint 1.19.x** (`backend-winit` + `renderer-femtovg`) | Choix utilisateur : Rust natif, binaire unique, léger |
 | Session cible | **Wayland** en priorité | `--wid` y est impossible ; rendu via API render obligatoire |
 | Vidéo | **libmpv2 7.x**, API render OpenGL → FBO → texture Slint | Vidéo = élément d'UI, contrôles superposables, pas de `--wid` |
 | Extraction | **yt-dlp** en sous-processus (`-J`) | SABR / PO tokens : ne jamais réimplémenter |
@@ -91,13 +91,22 @@
    - créer une texture `GL_TEXTURE_2D` RGBA 1280×720 + un FBO ;
    - créer `Mpv` (`Mpv::with_initializer`) puis `mpv.create_render_context([ApiType(OpenGl), InitParams(OpenGLInitParams { get_proc_address, ctx })])` ;
    - `BorrowedOpenGLTextureBuilder::new_gl_2d_rgba_texture(texture_id, size).build()` → `slint::Image` affectée à la page Watch.
-3. `RenderContext::set_update_callback(|| request_redraw())` — coalescé par un `AtomicBool`, jamais d'appel mpv dans le callback.
-4. `RenderingState::BeforeRendering` : si `frame_pending`, `render_context.render(fbo_id, 1280, 720, true)` puis `report_swap()`.
+3. `RenderContext::set_update_callback(|| pending.store(true))` — le callback vient d'un thread mpv : **ni API mpv, ni API Slint** dedans. Un `slint::Timer` de 8 ms, côté UI, consomme le drapeau et appelle `request_redraw()`.
+4. `RenderingState::BeforeRendering` : si `frame_pending`, `render_context.render::<LoaderCtx>(fbo_id, 1280, 720, true)` puis `report_swap()`.
 5. `RenderingState::RenderingTeardown` : drop du render context avant le contexte mpv, puis texture/FBO.
 
 La taille de texture est fixe en v1 (le scaling est fait par Slint). Le redimensionnement du FBO est une optimisation ultérieure.
 
-### 4.2 Options mpv imposées
+**Contrainte de threading vérifiée à la compilation :** `slint::Image` et `slint::Weak` ne sont pas `Send`. L'image issue du notifier ne peut donc pas être transmise par `slint::invoke_from_event_loop` ni par un canal : elle transite par un slot `Rc<RefCell<Option<UiUpdate>>>` (type `Frame(image, status)` ou `Status(message)`) lu par le timer UI, hors phase de rendu. Corollaire : la mise à jour d'état du lecteur (position, durée, paused) se fait par polling `slint::Timer`, jamais depuis un callback mpv.
+
+### 4.2 Détails d'API confirmés par compilation (2026-11-19)
+
+- `glow::create_texture()` / `create_framebuffer()` renvoient `Result<_, String>` : conversion explicite `map_err` vers `anyhow`.
+- `RenderContext::render` a un générique `GLContext` non inférable : appel en turbofish `render::<LoaderCtx>(...)`, avec le **même** type que lors de `create_render_context`.
+- `OpenGLInitParams::get_proc_address` est un pointeur de fonction `fn(&GLContext, &str) -> *mut c_void` : le loader Slint (`&dyn Fn(&CStr) -> *const c_void`) doit être enveloppé dans une structure et convertir `&str` → `CString`.
+- Stack validée : Rust 1.100, Slint 1.19.0, libmpv2 7.0.1, libmpv 0.37.0.
+
+### 4.3 Options mpv imposées
 
 ```
 osc=no, osd-level=0, input-default-bindings=no, input-vo-keyboard=no,

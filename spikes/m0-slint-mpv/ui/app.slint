@@ -1,0 +1,113 @@
+export component AppWindow inherits Window {
+    title: "M0 — Slint + libmpv";
+    width: 1280px;
+    height: 800px;
+    background: #0f0f0f;
+
+    in property <image> frame;
+    in property <string> status: "démarrage";
+    in property <bool> playing: false;
+    in property <float> position: 0;
+    in property <float> duration: 0;
+    in property <float> fps: 0;
+    in property <float> render-ms: 0;
+    in property <float> progress: 0;
+    in property <string> progress-label: "0:00 / 0:00";
+    in property <string> metrics: "";
+
+    callback toggle-play();
+    callback seek-to(float);
+
+    VerticalLayout {
+        Rectangle {
+            background: #000000;
+            clip: true;
+
+            Image {
+                width: 100%;
+                height: 100%;
+                source: root.frame;
+                image-fit: contain;
+            }
+
+            Text {
+                x: 12px;
+                y: 12px;
+                text: root.status;
+                color: #ffffff;
+                font-size: 13px;
+            }
+        }
+
+        Rectangle {
+            height: 72px;
+            background: #0f0f0f;
+
+            HorizontalLayout {
+                padding: 12px;
+                spacing: 12px;
+
+                Rectangle {
+                    width: 88px;
+                    height: 40px;
+                    border-radius: 8px;
+                    background: #272727;
+
+                    Text {
+                        text: root.playing ? "Pause" : "Lecture";
+                        color: #f1f1f1;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                        font-size: 14px;
+                    }
+
+                    touch := TouchArea {
+                        clicked => { root.toggle-play(); }
+                    }
+                }
+
+                Text {
+                    text: root.progress-label;
+                    color: #f1f1f1;
+                    vertical-alignment: center;
+                    width: 110px;
+                    font-size: 13px;
+                }
+
+                Rectangle {
+                    Rectangle {
+                        y: (parent.height - 4px) / 2;
+                        height: 4px;
+                        width: parent.width;
+                        border-radius: 2px;
+                        background: #3f3f3f;
+                    }
+
+                    Rectangle {
+                        y: (parent.height - 4px) / 2;
+                        height: 4px;
+                        width: parent.width * root.progress;
+                        border-radius: 2px;
+                        background: #f10000;
+                    }
+
+                    bar := TouchArea {
+                        clicked => {
+                            if (bar.width > 0) {
+                                root.seek-to(bar.mouse-x / bar.width);
+                            }
+                        }
+                    }
+                }
+
+                Text {
+                    text: root.metrics;
+                    color: #aaaaaa;
+                    vertical-alignment: center;
+                    width: 190px;
+                    font-size: 12px;
+                }
+            }
+        }
+    }
+}
