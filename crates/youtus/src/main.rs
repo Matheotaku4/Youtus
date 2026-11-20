@@ -408,6 +408,13 @@ impl Runtime {
         if let Some(player) = self.player.clone() {
             let (position, duration) = sanitize_time(player.position(), player.duration());
             self.save(position, duration);
+            if let Some(video_id) = self.current.clone() {
+                let _ = self.commands.send(worker::Command::Closed {
+                    video_id,
+                    position_ms: (position.max(0.0) * 1000.0).round() as u64,
+                    duration_ms: (duration.max(0.0) * 1000.0).round() as u64,
+                });
+            }
             let _ = player.set_paused(true);
             if stop {
                 let _ = player.stop();

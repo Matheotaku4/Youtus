@@ -132,7 +132,7 @@ pub struct ResolvedStream {
 pub fn resolve(video_id: &str, max_height: u32, cookies: Option<&Path>) -> Result<ResolvedStream>
 ```
 
-Commande : `yt-dlp -J --no-warnings --no-playlist --no-progress -f "bv*[height<=H]+ba/b[height<=H]/b" --extractor-args "youtube:player-client=tv,ios,web_safari"` (+ `--cookies` si fourni). Les `http_headers` sont passés à mpv via `http-header-fields`. Cache mémoire 30 min par `(video_id, max_height)`. Si `yt-dlp` est absent : erreur typée `PlayerError::YtDlpMissing` et action UI « installer yt-dlp » (téléchargement du binaire standalone dans `~/.local/share/youtus/bin`).
+Commande : `yt-dlp -J --no-warnings --no-playlist --no-progress -f "b[height<=H][protocol^=http]/b[height<=H]/b" --extractor-args "youtube:player-client=web,web_embedded"` (+ `--cookies` si fourni). Le client WEB est imposé : les URLs rendues aux clients tv/ios sont verrouillées côté CDN et répondent 403 quand mpv les demande (mesuré le 2026-11-20). Sans PO token, ce client ne propose que le progressif 360p ; le HLS 720p, servi comme une liste de segments, cassait la lecture. Les `http_headers` sont passés à mpv via `http-header-fields`. Cache mémoire 30 min par `(video_id, max_height)`. Si `yt-dlp` est absent : erreur typée `PlayerError::YtDlpMissing` et action UI « installer yt-dlp » (téléchargement du binaire standalone dans `~/.local/share/youtus/bin`).
 
 ### 4.5 API `trait Player`
 
@@ -194,12 +194,12 @@ pub trait Player {
 | Historique | ✅ | 15 identifiants vidéo distincts |
 | Like | ✅ | `likeStatus = LIKE`, état restauré |
 | Lire les commentaires | ✅ | continuation + 20 `commentThreadRenderer` |
-| `playbackTracking` | ❌ en OAuth TV | `UNPLAYABLE` sur la machine réelle (IP résidentielle) : le bloc reste absent, donc l'échec vient du client TV, pas de l'IP |
+| `playbackTracking` | ✅ en WEB anonyme | mesuré le 2026-11-20 sur la machine réelle : `/player` WEB anonyme `OK`, trois URLs présentes, beacons acceptés (204). Le client TV, lui, répond toujours `UNPLAYABLE` |
 | `createCommentParams` | ❌ | absent en TV comme en WEB anonyme |
 
 Le 400 `INVALID_ARGUMENT` qui avait fait condamner l'OAuth venait de `account/account_menu`, endpoint qui refuse **aussi le jeton TV public de Google**. `browse`, `like` et `next` acceptent le bearer sans problème : la sonde s'authentifie désormais par l'accueil personnalisé, pas par cet endpoint. Le jeton reste lié au type de client (400 en WEB, 200 en TVHTML5), ce qui n'a rien d'anormal.
 
-Re-mesuré le 2026-11-20 sur la machine réelle : le jeton TV rend toujours l'accueil (16 tuiles) et l'historique (15 entrées), mais `/player` répond `UNPLAYABLE` sans `playbackTracking`. La progression (M3) ne peut donc pas partir de l'OAuth TV : premier point à mesurer en session **WEB** (cookies).
+Re-mesuré le 2026-11-20 sur la machine réelle : le jeton TV rend toujours l'accueil (16 tuiles) et l'historique (15 entrées), mais `/player` répond `UNPLAYABLE` sans `playbackTracking`. En revanche un `/player` **WEB anonyme** avec le `signatureTimestamp` courant répond `OK`, fournit `videostatsPlaybackUrl`, `videostatsWatchtimeUrl` et `atrUrl`, et accepte les POST (204). La progression ne dépend donc pas des cookies ; seuls l'attribution à l'historique du compte et les commentaires les exigent.
 
 Conséquence d'architecture, indépendante du fournisseur d'identifiants : le client TV ne donne ni flux vidéo ni `createCommentParams`. La lecture et la publication de commentaires exigent une session **WEB** (cookies). C'est ce qui justifie `AuthStrategy` (§5.5).
 
@@ -319,6 +319,8 @@ Source : bloc `playbackTracking` du `/player` authentifié.
 - Les pings sont *best effort* : jamais bloquants, jamais d'erreur visible, 1 retry.
 - Si les URLs sont absentes (non authentifié / tracking refusé) : mode « historique local seulement », signalé dans l'UI.
 - À la fermeture de l'app ou changement de vidéo : `final=1&state=paused` avec la dernière position connue.
+
+**Mesures du 2026-11-20 (machine réelle, WEB anonyme)** : le `cpn` de 16 caractères passe sans cookie ; `videostatsPlaybackUrl`, `atrUrl` et `videostatsWatchtimeUrl` répondent 204 ; un ping watchtime part bien toutes les 30 s de nouvelle position (42 s puis 76 s lors de l'essai). Sans cookies, la vue est comptée mais n'apparaît pas dans l'historique du compte.
 
 ---
 

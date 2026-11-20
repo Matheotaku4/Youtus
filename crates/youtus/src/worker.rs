@@ -11,9 +11,12 @@ use youtus_auth::{
     load_token, parse_netscape_cookies, poll_token, refresh, request_device_code, save_token,
     Credentials, StoredToken,
 };
-use youtus_core::{Feed, FeedKind, Video, VideoId};
+use youtus_core::progress::{
+    atr_params, playback_params, watchtime_params, Ping, ProgressTracker,
+};
+use youtus_core::{with_params, Feed, FeedKind, Video, VideoId};
 use youtus_store::Store;
-use youtus_yt::{AuthStrategy, Client, Profile};
+use youtus_yt::{AuthStrategy, Client, PlayerResponse, Profile, Tracking};
 
 use crate::config::Config;
 
@@ -28,6 +31,12 @@ pub enum Command {
     SignIn,
     Play { id: String, title: String },
     Progress {
+        video_id: String,
+        position_ms: u64,
+        duration_ms: u64,
+    },
+    /// La lecture est fermée : dernier enregistrement **et** ping `final=1`.
+    Closed {
         video_id: String,
         position_ms: u64,
         duration_ms: u64,
@@ -109,10 +118,22 @@ struct ThumbTask {
     url: String,
 }
 
+/// Une lecture en cours : `cpn`, beacons et dernière position connue.
+struct WatchSession {
+    video_id: String,
+    tracker: ProgressTracker,
+    tracking: Option<Tracking>,
+    last_ms: u64,
+    agent: ureq::Agent,
+}
+
 struct Worker {
     config: Config,
     events: Sender<Event>,
     session: Option<Session>,
+    /// Client WEB réservé au `/player` : le client TV ne rend pas de tracking.
+    player_client: Option<Client>,
+    watch: Option<WatchSession>,
     store: Option<Store>,
     page: FeedKind,
     generation: Arc<AtomicU64>,
@@ -138,6 +159,8 @@ impl Worker {
             config,
             events,
             session: None,
+            player_client: None,
+            watch: None,
             store,
             page: FeedKind::Home,
             generation,
@@ -155,6 +178,7 @@ impl Worker {
             }
         }
 
+        worker.player_client = worker.open_player_client();
         worker
     }
 
@@ -174,12 +198,20 @@ impl Worker {
                     self.load(page);
                 }
                 Command::SignIn => self.sign_in(),
-                Command::Play { id, title } => self.start_playback(id, title),
+                Command::Play { id, title } => {
+                    self.close_watch_session();
+                    self.start_playback(id, title);
+                }
                 Command::Progress {
                     video_id,
                     position_ms,
                     duration_ms,
-                } => self.save_progress(&video_id, position_ms, duration_ms),
+                } => self.progress(&video_id, position_ms, duration_ms),
+                Command::Closed {
+                    video_id,
+                    position_ms,
+                    duration_ms,
+                } => self.closed(&video_id, position_ms, duration_ms),
             }
         }
     }
@@ -355,6 +387,7 @@ impl Worker {
                     stream.audio_url.is_some()
                 );
                 let start_at = resume_seconds(resume_ms, stream.duration);
+                let tracked = id.clone();
                 let _ = self.events.send(Event::Playback {
                     video_id: id,
                     title,
@@ -363,6 +396,10 @@ impl Worker {
                     headers: stream.http_headers,
                     start_at,
                 });
+                // Le bloc `playbackTracking` arrive après le démarrage de la
+                // vidéo : la lecture ne doit pas attendre ce réseau.
+                let start_ms = (start_at.unwrap_or(0.0) * 1000.0).round() as u64;
+                self.begin_tracking(&tracked, start_ms);
             }
             Err(error) => {
                 let _ = self
@@ -370,6 +407,100 @@ impl Worker {
                     .send(Event::Error(format!("Lecture impossible : {error}")));
             }
         }
+    }
+
+    /// Le client qui interroge `/player` est toujours WEB : en session OAuth,
+    /// le client TV répond `UNPLAYABLE` ; avec des cookies, la même requête est
+    /// signée `SAPISIDHASH` et la lecture est attribuée au compte.
+    fn open_player_client(&self) -> Option<Client> {
+        let auth = self
+            .config
+            .cookies_path
+            .as_ref()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|text| parse_netscape_cookies(&text))
+            .map(|cookies| AuthStrategy::Sapisid {
+                sapisid: cookies.sapisid,
+                origin: cookies.origin,
+            })
+            .unwrap_or(AuthStrategy::Anonymous);
+        Some(Client::new(Profile::web(), auth))
+    }
+
+    fn begin_tracking(&mut self, video_id: &str, start_ms: u64) {
+        self.close_watch_session();
+
+        let agent = ureq::AgentBuilder::new()
+            .user_agent(youtus_yt::profile::CHROME_UA)
+            .timeout(Duration::from_secs(15))
+            .build();
+        let mut watch = WatchSession {
+            video_id: video_id.to_owned(),
+            tracker: ProgressTracker::new(random_cpn()),
+            tracking: None,
+            last_ms: start_ms,
+            agent,
+        };
+
+        match self.player_client.as_mut().map(|client| client.player(video_id)) {
+            Some(Ok(response)) => self.track_response(&mut watch, response),
+            Some(Err(error)) => eprintln!("youtus: /player : {error}"),
+            None => {}
+        }
+
+        let pings = watch.tracker.observe(start_ms);
+        send_pings(&mut watch, pings);
+        self.watch = Some(watch);
+    }
+
+    fn track_response(&mut self, watch: &mut WatchSession, response: PlayerResponse) {
+        match &response.tracking {
+            Some(tracking) => eprintln!(
+                "youtus: playbackTracking présent (atr : {})",
+                if tracking.atr.is_some() { "oui" } else { "non" }
+            ),
+            None => {}
+        }
+        watch.tracking = response.tracking;
+        if watch.tracking.is_none() {
+            eprintln!("youtus: /player {} sans playbackTracking", response.status);
+            let _ = self.events.send(Event::Notice(
+                "Progression YouTube indisponible : historique local seulement.".to_owned(),
+            ));
+        }
+    }
+
+    fn progress(&mut self, video_id: &str, position_ms: u64, duration_ms: u64) {
+        self.save_progress(video_id, position_ms, duration_ms);
+        let Some(mut watch) = self.watch.take() else {
+            return;
+        };
+        if watch.video_id == video_id {
+            watch.last_ms = position_ms;
+            let pings = watch.tracker.observe(position_ms);
+            send_pings(&mut watch, pings);
+        }
+        self.watch = Some(watch);
+    }
+
+    fn closed(&mut self, video_id: &str, position_ms: u64, duration_ms: u64) {
+        self.save_progress(video_id, position_ms, duration_ms);
+        let Some(mut watch) = self.watch.take() else {
+            return;
+        };
+        if watch.video_id == video_id {
+            watch.last_ms = position_ms;
+            let pings = watch.tracker.finish(position_ms);
+            send_pings(&mut watch, pings);
+        }
+    }
+
+    fn close_watch_session(&mut self) {
+        let Some(mut watch) = self.watch.take() else {
+            return;
+        };
+        let pings = watch.tracker.finish(watch.last_ms);
+        send_pings(&mut watch, pings);
     }
 
     fn save_progress(&mut self, video_id: &str, position_ms: u64, duration_ms: u64) {
@@ -575,6 +706,70 @@ fn fetch_thumbnail(agent: &ureq::Agent, url: &str) -> Option<(u32, u32, Vec<u8>)
     let rgba = image.to_rgba8();
     let (width, height) = rgba.dimensions();
     Some((width, height, rgba.into_raw()))
+}
+
+/// Envoie les pings demandés : best effort, jamais bloquant pour l'UI, un
+/// seul nouvel essai sur erreur de transport.
+fn send_pings(watch: &mut WatchSession, pings: Vec<Ping>) {
+    let Some(tracking) = watch.tracking.as_ref() else {
+        return;
+    };
+    let cpn = watch.tracker.cpn().to_owned();
+
+    for ping in pings {
+        let (url, params) = match ping {
+            Ping::Playback => (tracking.playback.as_str(), playback_params(&cpn)),
+            Ping::Atr => match tracking.atr.as_deref() {
+                Some(url) => (url, atr_params(&cpn)),
+                None => continue,
+            },
+            Ping::Watchtime { position_ms, last } => (
+                tracking.watchtime.as_str(),
+                watchtime_params(&cpn, position_ms, last),
+            ),
+        };
+        let label = match ping {
+            Ping::Playback => "playback".to_owned(),
+            Ping::Atr => "atr".to_owned(),
+            Ping::Watchtime { position_ms, last } => {
+                format!("watchtime {position_ms} ms{}", if last { " (final)" } else { "" })
+            }
+        };
+        let url = with_params(url, &params);
+        match post_beacon(&watch.agent, &url) {
+            Ok(()) => eprintln!("youtus: beacon {label} accepté"),
+            Err(error) => eprintln!("youtus: beacon {label} : {error}"),
+        }
+    }
+}
+
+fn post_beacon(agent: &ureq::Agent, url: &str) -> Result<(), String> {
+    let send = || {
+        agent
+            .post(url)
+            .set("Content-Type", "application/json")
+            .set("Origin", "https://www.youtube.com")
+            .send_string("{}")
+    };
+    match send() {
+        Ok(_) => Ok(()),
+        Err(ureq::Error::Status(status, _)) => Err(format!("HTTP {status}")),
+        Err(_) => {
+            std::thread::sleep(Duration::from_millis(300));
+            send().map(|_| ()).map_err(|error| error.to_string())
+        }
+    }
+}
+
+/// 96 bits de `/dev/urandom` encodés en 16 caractères base64url.
+fn random_cpn() -> String {
+    use std::io::Read;
+
+    let mut bytes = [0u8; 12];
+    if let Ok(mut file) = std::fs::File::open("/dev/urandom") {
+        let _ = file.read_exact(&mut bytes);
+    }
+    youtus_core::encode_cpn(&bytes)
 }
 
 #[cfg(test)]

@@ -34,15 +34,16 @@ pub enum Error {
     Live,
 }
 
-/// `max_height` borne la définition demandée à yt-dlp. Les clients tv/ios sont
-/// forcés : avec les clients par défaut, yt-dlp rend des URLs DASH que le CDN
-/// refuse en 403 (signature liée au client d'origine).
+/// `max_height` borne la définition demandée à yt-dlp. Le client WEB est forcé :
+/// les URLs rendues aux clients tv/ios sont verrouillées côté CDN et répondent
+/// 403 quand mpv les demande (mesuré sur la machine). Sans PO token, le client
+/// WEB ne propose que le progressif 360p — le DASH 720p viendra plus tard.
 pub fn resolve(
     video_id: &str,
     max_height: u32,
     cookies: Option<&Path>,
 ) -> Result<ResolvedStream, Error> {
-    let format = format!("b[height<={max_height}]/b");
+    let format = format!("b[height<={max_height}][protocol^=http]/b[height<={max_height}]/b");
     let mut command = std::process::Command::new("yt-dlp");
     command.args([
         "-J",
@@ -52,7 +53,7 @@ pub fn resolve(
         "-f",
         &format,
         "--extractor-args",
-        "youtube:player-client=tv,ios,web_safari",
+        "youtube:player-client=web,web_embedded",
     ]);
     if let Some(cookies) = cookies {
         command.arg("--cookies").arg(cookies);
