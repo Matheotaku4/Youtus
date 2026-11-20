@@ -245,19 +245,23 @@ pub fn probe_like(yt: &mut Innertube, video: &str) -> Result<LikeProbe> {
     let target = json!({ "target": { "videoId": video } });
     let liked_response = yt.post("like/like", target.clone())?;
 
-    // Le client TV répond vide : un 200 est la seule preuve disponible ici, et
-    // on le dit plutôt que de prétendre avoir relu l'état.
-    let detail = match find_key(&liked_response, "likeStatus").and_then(Value::as_str) {
-        Some(status) if status.eq_ignore_ascii_case("like") => "likeStatus = LIKE".to_owned(),
-        Some(status) => format!("likeStatus = {status}"),
-        None => "HTTP 200, réponse vide (état non relu)".to_owned(),
+    // Un 200 sans `likeStatus` ne prouve rien : le client TV répond parfois un
+    // corps vide. On exige le statut explicite pour valider la capacité.
+    let status = find_key(&liked_response, "likeStatus").and_then(Value::as_str);
+    let liked = status
+        .map(|status| status.eq_ignore_ascii_case("like"))
+        .unwrap_or(false);
+    let detail = match status {
+        Some(status) if liked => format!("likeStatus = {status}"),
+        Some(status) => format!("likeStatus = {status} (pas un like)"),
+        None => "HTTP 200 sans likeStatus : non validé".to_owned(),
     };
 
     // On remet systématiquement l'état d'origine (aucune note).
     let restored = yt.post("like/removelike", target).is_ok();
 
     Ok(LikeProbe {
-        liked: true,
+        liked,
         restored,
         detail,
     })
