@@ -1,0 +1,272 @@
+import { Button, ScrollView } from "std-widgets.slint";
+
+export struct VideoCard {
+    id: string,
+    title: string,
+    channel: string,
+    meta: string,
+    thumbnail: image,
+}
+
+component NavButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback clicked();
+
+    height: 40px;
+    border-radius: 8px;
+    background: selected ? #2c2c2c : transparent;
+
+    Text {
+        text: root.label;
+        color: root.selected ? #ffffff : #b8b8b8;
+        font-size: 14px;
+        vertical-alignment: center;
+        x: 14px;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "Youtus";
+    width: 1280px;
+    height: 800px;
+    background: #141414;
+
+    in property <[VideoCard]> cards;
+    in property <string> page-title: "Accueil";
+    in property <string> status: "";
+    in property <bool> loading: false;
+    in property <bool> has-error: false;
+    in property <string> error-text: "";
+    in property <bool> signed-out: false;
+    in property <string> user-code: "";
+    in property <string> verification-url: "";
+
+    callback navigate(string);
+    callback retry();
+    callback play(string);
+    callback sign-in();
+
+    HorizontalLayout {
+        sidebar := Rectangle {
+            width: 210px;
+            background: #0f0f0f;
+
+            VerticalLayout {
+                padding: 12px;
+                spacing: 6px;
+
+                Text {
+                    text: "Youtus";
+                    color: #ff4d4d;
+                    font-size: 22px;
+                    font-weight: 700;
+                }
+
+                NavButton { label: "Accueil"; selected: root.page-title == "Accueil"; clicked => { root.navigate("home"); } }
+                NavButton { label: "Abonnements"; selected: root.page-title == "Abonnements"; clicked => { root.navigate("subscriptions"); } }
+                NavButton { label: "Historique"; selected: root.page-title == "Historique"; clicked => { root.navigate("history"); } }
+                NavButton { label: "Tendances"; selected: root.page-title == "Tendances"; clicked => { root.navigate("trending"); } }
+
+                Rectangle { vertical-stretch: 1; }
+
+                Text {
+                    text: root.status;
+                    color: #6f6f6f;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        VerticalLayout {
+            header := Rectangle {
+                height: 56px;
+                background: #181818;
+
+                HorizontalLayout {
+                    padding-left: 20px;
+                    padding-right: 20px;
+
+                    Text {
+                        text: root.page-title;
+                        color: #ffffff;
+                        font-size: 18px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle { horizontal-stretch: 1; }
+
+                    if root.loading : Text {
+                        text: "Chargement…";
+                        color: #8a8a8a;
+                        font-size: 13px;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            if root.has-error : Rectangle {
+                    height: 72px;
+                    background: #2a1616;
+
+                    HorizontalLayout {
+                        padding-left: 20px;
+                        padding-right: 20px;
+                        spacing: 16px;
+
+                        Text {
+                            text: root.error-text;
+                            color: #ffb4b4;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                        }
+
+                        Button {
+                            text: "Réessayer";
+                            clicked => { root.retry(); }
+                        }
+                    }
+                }
+
+            if root.signed-out : Rectangle {
+                vertical-stretch: 1;
+                background: #141414;
+
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 14px;
+
+                    Text {
+                        text: "Connecte-toi à YouTube";
+                        color: #ffffff;
+                        font-size: 22px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                    }
+
+                    Text {
+                        text: root.user-code == "" ? "…" : root.user-code;
+                        color: #ff4d4d;
+                        font-size: 34px;
+                        font-weight: 700;
+                        letter-spacing: 6px;
+                        horizontal-alignment: center;
+                    }
+
+                    Text {
+                        text: root.verification-url;
+                        color: #b8b8b8;
+                        font-size: 14px;
+                        horizontal-alignment: center;
+                    }
+
+                    Text {
+                        text: "Ouvre cette adresse, saisis le code, puis reviens ici.";
+                        color: #7a7a7a;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                    }
+
+                    if root.user-code == "" : Button {
+                        text: "Se connecter";
+                        clicked => { root.sign-in(); }
+                    }
+
+                    Text {
+                        text: root.status;
+                        color: #6f6f6f;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                        max-width: 520px;
+                    }
+                }
+            }
+
+            if !root.signed-out : ScrollView {
+                GridLayout {
+                    padding: 20px;
+                    spacing: 18px;
+
+                    for card[index] in root.cards : Rectangle {
+                        row: Math.floor(index / 4);
+                        col: Math.mod(index, 4);
+                        border-radius: 10px;
+                        background: #1e1e1e;
+                        clip: true;
+
+                        VerticalLayout {
+                            Rectangle {
+                                height: 150px;
+                                background: #262626;
+
+                                Image {
+                                    source: card.thumbnail;
+                                    image-fit: cover;
+                                    width: 100%;
+                                    height: 100%;
+                                }
+                            }
+
+                            VerticalLayout {
+                                padding: 10px;
+                                spacing: 4px;
+
+                                Text {
+                                    text: card.title;
+                                    color: #f1f1f1;
+                                    font-size: 14px;
+                                    wrap: word-wrap;
+                                    max-height: 40px;
+                                    overflow: elide;
+                                }
+
+                                Text {
+                                    text: card.channel;
+                                    color: #9a9a9a;
+                                    font-size: 12px;
+                                    overflow: elide;
+                                }
+
+                                Text {
+                                    text: card.meta;
+                                    color: #6f6f6f;
+                                    font-size: 11px;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+
+                        touch := TouchArea {
+                            clicked => { root.play(card.id); }
+                        }
+                    }
+
+                    if root.cards.length == 0 && !root.loading && !root.has-error : Rectangle {
+                        row: 0;
+                        col: 0;
+                        colspan: 4;
+                        height: 120px;
+                        background: transparent;
+
+                        Text {
+                            text: "Rien à afficher pour l'instant.";
+                            color: #7a7a7a;
+                            font-size: 14px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

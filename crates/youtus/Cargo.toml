@@ -1,0 +1,18 @@
+[package]
+name = "youtus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+youtus-core.workspace = true
+youtus-yt.workspace = true
+youtus-auth.workspace = true
+youtus-store.workspace = true
+youtus-ui.workspace = true
+anyhow.workspace = true
+crossbeam-channel.workspace = true
+image.workspace = true
+ureq.workspace = true
+slint.workspace = true
