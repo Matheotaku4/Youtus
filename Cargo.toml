@@ -15,6 +15,7 @@ youtus-yt = { path = "crates/youtus-yt" }
 youtus-auth = { path = "crates/youtus-auth" }
 youtus-store = { path = "crates/youtus-store" }
 youtus-ui = { path = "crates/youtus-ui" }
+youtus-play = { path = "crates/youtus-play" }
 
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
@@ -27,6 +28,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 crossbeam-channel = "0.5"
 slint = "1.19"
 slint-build = "1.19"
+libmpv2 = "7"
+glow = "0.16"
 
 [profile.release]
 lto = "thin"

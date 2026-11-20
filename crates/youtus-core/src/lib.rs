@@ -7,5 +7,5 @@ pub mod time;
 pub mod views;
 
 pub use model::{Feed, FeedKind, Video, VideoId};
-pub use time::{format_duration, parse_duration};
+pub use time::{format_duration, parse_duration, sanitize_time};
 pub use views::parse_view_count;

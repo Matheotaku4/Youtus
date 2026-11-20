@@ -11,7 +11,7 @@ use youtus_auth::{
     load_token, parse_netscape_cookies, poll_token, refresh, request_device_code, save_token,
     Credentials, StoredToken,
 };
-use youtus_core::{Feed, FeedKind, Video};
+use youtus_core::{Feed, FeedKind, Video, VideoId};
 use youtus_store::Store;
 use youtus_yt::{AuthStrategy, Client, Profile};
 
@@ -19,13 +19,19 @@ use crate::config::Config;
 
 const THUMB_WIDTH: u32 = 320;
 const THUMB_HEIGHT: u32 = 180;
+const MAX_HEIGHT: u32 = 720;
 
 #[derive(Clone, Debug)]
 pub enum Command {
     Load(FeedKind),
     Retry,
     SignIn,
-    Play(String),
+    Play { id: String, title: String },
+    Progress {
+        video_id: String,
+        position_ms: u64,
+        duration_ms: u64,
+    },
 }
 
 #[derive(Debug)]
@@ -46,6 +52,14 @@ pub enum Event {
     DeviceCode {
         user_code: String,
         verification_url: String,
+    },
+    Playback {
+        video_id: String,
+        title: String,
+        url: String,
+        audio_url: Option<String>,
+        headers: Vec<(String, String)>,
+        start_at: Option<f64>,
     },
 }
 
@@ -160,11 +174,12 @@ impl Worker {
                     self.load(page);
                 }
                 Command::SignIn => self.sign_in(),
-                Command::Play(id) => {
-                    let _ = self.events.send(Event::Notice(format!(
-                        "Lecture mpv : prévue en M2 — https://www.youtube.com/watch?v={id}"
-                    )));
-                }
+                Command::Play { id, title } => self.start_playback(id, title),
+                Command::Progress {
+                    video_id,
+                    position_ms,
+                    duration_ms,
+                } => self.save_progress(&video_id, position_ms, duration_ms),
             }
         }
     }
@@ -312,6 +327,61 @@ impl Worker {
         }
     }
 
+    /// Résout le flux puis renvoie la position de reprise lue en base.
+    fn start_playback(&mut self, id: String, title: String) {
+        if VideoId::new(id.clone()).is_none() {
+            let _ = self
+                .events
+                .send(Event::Error(format!("identifiant vidéo invalide : {id}")));
+            return;
+        }
+
+        let _ = self
+            .events
+            .send(Event::Notice(format!("Résolution du flux : {title}")));
+
+        let resume_ms = self
+            .store
+            .as_ref()
+            .and_then(|store| store.resume_position(&id).ok().flatten())
+            .unwrap_or(0);
+
+        match youtus_play::resolve(&id, MAX_HEIGHT, self.config.cookies_path.as_deref()) {
+            Ok(stream) => {
+                eprintln!(
+                    "youtus: flux {} ({}p), audio séparé : {}",
+                    stream.format_id,
+                    stream.height.unwrap_or(0),
+                    stream.audio_url.is_some()
+                );
+                let start_at = resume_seconds(resume_ms, stream.duration);
+                let _ = self.events.send(Event::Playback {
+                    video_id: id,
+                    title,
+                    url: stream.url,
+                    audio_url: stream.audio_url,
+                    headers: stream.http_headers,
+                    start_at,
+                });
+            }
+            Err(error) => {
+                let _ = self
+                    .events
+                    .send(Event::Error(format!("Lecture impossible : {error}")));
+            }
+        }
+    }
+
+    fn save_progress(&mut self, video_id: &str, position_ms: u64, duration_ms: u64) {
+        if let Some(store) = &self.store {
+            if let Err(error) = store.save_playback(video_id, position_ms, duration_ms) {
+                let _ = self
+                    .events
+                    .send(Event::Notice(format!("Position non enregistrée : {error}")));
+            }
+        }
+    }
+
     fn load(&mut self, kind: FeedKind) {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
 
@@ -419,6 +489,19 @@ impl Worker {
     }
 }
 
+/// Reprendre au début ou à la toute fin n'apporte rien : on ne restaure la
+/// position qu'à partir de 5 s et tant qu'il reste au moins 5 s à voir.
+fn resume_seconds(resume_ms: u64, duration: Option<f64>) -> Option<f64> {
+    if resume_ms < 5_000 {
+        return None;
+    }
+    let position = resume_ms as f64 / 1000.0;
+    match duration {
+        Some(duration) if duration > position + 5.0 => Some(position),
+        _ => None,
+    }
+}
+
 fn thumbnail_url(video: &Video) -> String {
     video.thumbnail.clone().unwrap_or_else(|| {
         format!(
@@ -498,6 +581,15 @@ fn fetch_thumbnail(agent: &ureq::Agent, url: &str) -> Option<(u32, u32, Vec<u8>)
 mod tests {
     use super::*;
     use youtus_core::VideoId;
+
+    #[test]
+    fn la_reprise_ignore_le_debut_et_la_fin() {
+        assert_eq!(resume_seconds(0, Some(200.0)), None);
+        assert_eq!(resume_seconds(4_000, Some(200.0)), None);
+        assert_eq!(resume_seconds(42_000, Some(200.0)), Some(42.0));
+        assert_eq!(resume_seconds(199_000, Some(200.0)), None);
+        assert_eq!(resume_seconds(42_000, None), None);
+    }
 
     #[test]
     fn la_miniature_retombe_sur_mqdefault() {

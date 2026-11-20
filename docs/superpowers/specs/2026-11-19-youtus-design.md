@@ -194,10 +194,12 @@ pub trait Player {
 | Historique | ✅ | 15 identifiants vidéo distincts |
 | Like | ✅ | `likeStatus = LIKE`, état restauré |
 | Lire les commentaires | ✅ | continuation + 20 `commentThreadRenderer` |
-| `playbackTracking` | ⏸ non conclu | `/player` `UNPLAYABLE` depuis l'IP de datacenter, **même en anonyme** |
+| `playbackTracking` | ❌ en OAuth TV | `UNPLAYABLE` sur la machine réelle (IP résidentielle) : le bloc reste absent, donc l'échec vient du client TV, pas de l'IP |
 | `createCommentParams` | ❌ | absent en TV comme en WEB anonyme |
 
 Le 400 `INVALID_ARGUMENT` qui avait fait condamner l'OAuth venait de `account/account_menu`, endpoint qui refuse **aussi le jeton TV public de Google**. `browse`, `like` et `next` acceptent le bearer sans problème : la sonde s'authentifie désormais par l'accueil personnalisé, pas par cet endpoint. Le jeton reste lié au type de client (400 en WEB, 200 en TVHTML5), ce qui n'a rien d'anormal.
+
+Re-mesuré le 2026-11-20 sur la machine réelle : le jeton TV rend toujours l'accueil (16 tuiles) et l'historique (15 entrées), mais `/player` répond `UNPLAYABLE` sans `playbackTracking`. La progression (M3) ne peut donc pas partir de l'OAuth TV : premier point à mesurer en session **WEB** (cookies).
 
 Conséquence d'architecture, indépendante du fournisseur d'identifiants : le client TV ne donne ni flux vidéo ni `createCommentParams`. La lecture et la publication de commentaires exigent une session **WEB** (cookies). C'est ce qui justifie `AuthStrategy` (§5.5).
 

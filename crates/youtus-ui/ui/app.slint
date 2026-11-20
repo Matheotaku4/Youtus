@@ -45,11 +45,20 @@ export component MainWindow inherits Window {
     in property <bool> signed-out: false;
     in property <string> user-code: "";
     in property <string> verification-url: "";
+    in property <bool> watch-open: false;
+    in property <image> video-frame;
+    in property <string> watch-title: "";
+    in property <bool> playing: false;
+    in property <float> progress: 0;
+    in property <string> time-label: "0:00 / 0:00";
 
     callback navigate(string);
     callback retry();
-    callback play(string);
+    callback play(string, string);
     callback sign-in();
+    callback close-watch();
+    callback toggle-play();
+    callback seek-to(float);
 
     HorizontalLayout {
         sidebar := Rectangle {
@@ -191,7 +200,94 @@ export component MainWindow inherits Window {
                 }
             }
 
-            if !root.signed-out : ScrollView {
+            if root.watch-open : VerticalLayout {
+                Rectangle {
+                    background: #000000;
+                    vertical-stretch: 1;
+                    clip: true;
+
+                    Image {
+                        width: 100%;
+                        height: 100%;
+                        source: root.video-frame;
+                        image-fit: contain;
+                    }
+
+                    Text {
+                        x: 16px;
+                        y: 12px;
+                        text: root.watch-title;
+                        color: #ffffff;
+                        font-size: 14px;
+                        font-weight: 600;
+                    }
+                }
+
+                Rectangle {
+                    height: 64px;
+                    background: #181818;
+
+                    HorizontalLayout {
+                        padding-left: 16px;
+                        padding-right: 16px;
+                        spacing: 12px;
+
+                        Button {
+                            text: root.playing ? "Pause" : "Lecture";
+                            clicked => { root.toggle-play(); }
+                        }
+
+                        Text {
+                            text: root.time-label;
+                            color: #f1f1f1;
+                            font-size: 12px;
+                            width: 120px;
+                            vertical-alignment: center;
+                        }
+
+                        Rectangle {
+                            horizontal-stretch: 1;
+
+                            Rectangle {
+                                x: 0;
+                                y: (parent.height - 4px) / 2;
+                                height: 4px;
+                                width: parent.width;
+                                border-radius: 2px;
+                                background: #3f3f3f;
+                            }
+
+                            Rectangle {
+                                x: 0;
+                                y: (parent.height - 4px) / 2;
+                                height: 4px;
+                                width: parent.width * root.progress;
+                                border-radius: 2px;
+                                background: #ff0000;
+                            }
+
+                            bar := TouchArea {
+                                x: 0;
+                                y: 0;
+                                width: parent.width;
+                                height: parent.height;
+                                clicked => {
+                                    if (bar.width > 0) {
+                                        root.seek-to(bar.mouse-x / bar.width);
+                                    }
+                                }
+                            }
+                        }
+
+                        Button {
+                            text: "Fermer";
+                            clicked => { root.close-watch(); }
+                        }
+                    }
+                }
+            }
+
+            if !root.signed-out && !root.watch-open : ScrollView {
                 GridLayout {
                     padding: 20px;
                     spacing: 18px;
@@ -246,7 +342,7 @@ export component MainWindow inherits Window {
                         }
 
                         touch := TouchArea {
-                            clicked => { root.play(card.id); }
+                            clicked => { root.play(card.id, card.title); }
                         }
                     }
 

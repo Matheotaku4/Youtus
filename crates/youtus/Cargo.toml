@@ -11,6 +11,7 @@ youtus-yt.workspace = true
 youtus-auth.workspace = true
 youtus-store.workspace = true
 youtus-ui.workspace = true
+youtus-play.workspace = true
 anyhow.workspace = true
 crossbeam-channel.workspace = true
 image.workspace = true

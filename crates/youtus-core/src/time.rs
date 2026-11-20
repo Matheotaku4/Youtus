@@ -11,6 +11,20 @@ pub fn format_duration(duration: Duration) -> String {
     }
 }
 
+/// Ramène position et durée à des valeurs affichables : mpv renvoie `NaN`
+/// avant le chargement et une durée nulle pour un flux inconnu.
+pub fn sanitize_time(position: f64, duration: f64) -> (f64, f64) {
+    if !duration.is_finite() || duration <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let position = if position.is_finite() && position > 0.0 {
+        position.min(duration)
+    } else {
+        0.0
+    };
+    (position, duration)
+}
+
 /// Lit `25:35`, `1:02:03` ou `2:03:04:05` (heures > 24).
 pub fn parse_duration(text: &str) -> Option<Duration> {
     let text = text.trim();
@@ -66,6 +80,15 @@ mod tests {
         assert_eq!(parse_duration("1:99"), None);
         assert_eq!(parse_duration("1:2a"), None);
         assert_eq!(parse_duration("1:"), None);
+    }
+
+    #[test]
+    fn assainit_les_temps_de_mpv() {
+        assert_eq!(sanitize_time(f64::NAN, f64::NAN), (0.0, 0.0));
+        assert_eq!(sanitize_time(10.0, 0.0), (0.0, 0.0));
+        assert_eq!(sanitize_time(-4.0, 100.0), (0.0, 100.0));
+        assert_eq!(sanitize_time(140.0, 100.0), (100.0, 100.0));
+        assert_eq!(sanitize_time(12.5, 100.0), (12.5, 100.0));
     }
 
     #[test]

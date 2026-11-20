@@ -9,12 +9,15 @@ use youtus_core::Video;
 
 slint::include_modules!();
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     Navigate(String),
     Retry,
-    Play(String),
+    Play { id: String, title: String },
     SignIn,
+    CloseWatch,
+    TogglePlay,
+    Seek(f32),
 }
 
 pub struct App {
@@ -94,6 +97,30 @@ impl App {
         self.window.set_verification_url(url.into());
     }
 
+    pub fn set_watch_open(&self, open: bool) {
+        self.window.set_watch_open(open);
+    }
+
+    pub fn set_video_frame(&self, image: slint::Image) {
+        self.window.set_video_frame(image);
+    }
+
+    pub fn set_watch_title(&self, title: &str) {
+        self.window.set_watch_title(title.into());
+    }
+
+    pub fn set_playing(&self, playing: bool) {
+        self.window.set_playing(playing);
+    }
+
+    pub fn set_progress(&self, progress: f32) {
+        self.window.set_progress(progress.clamp(0.0, 1.0));
+    }
+
+    pub fn set_time_label(&self, label: &str) {
+        self.window.set_time_label(label.into());
+    }
+
     pub fn on_command(&self, handler: impl Fn(Command) + 'static) {
         let handler = Rc::new(handler);
 
@@ -112,8 +139,26 @@ impl App {
             sign_in(Command::SignIn);
         });
 
-        self.window.on_play(move |id| {
-            handler(Command::Play(id.to_string()));
+        let close_watch = handler.clone();
+        self.window.on_close_watch(move || {
+            close_watch(Command::CloseWatch);
+        });
+
+        let toggle_play = handler.clone();
+        self.window.on_toggle_play(move || {
+            toggle_play(Command::TogglePlay);
+        });
+
+        let seek = handler.clone();
+        self.window.on_seek_to(move |fraction| {
+            seek(Command::Seek(fraction));
+        });
+
+        self.window.on_play(move |id, title| {
+            handler(Command::Play {
+                id: id.to_string(),
+                title: title.to_string(),
+            });
         });
     }
 }
