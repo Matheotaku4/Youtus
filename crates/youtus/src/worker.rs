@@ -442,10 +442,20 @@ impl Worker {
             agent,
         };
 
-        match self.player_client.as_mut().map(|client| client.player(video_id)) {
-            Some(Ok(response)) => self.track_response(&mut watch, response),
-            Some(Err(error)) => eprintln!("youtus: /player : {error}"),
-            None => {}
+        // Crochet de test : les beacons partent vers un serveur local, sans
+        // dépendre de YouTube (voir `YOUTUS_TRACKING_ORIGIN`).
+        if let Ok(origin) = std::env::var("YOUTUS_TRACKING_ORIGIN") {
+            watch.tracking = Some(Tracking {
+                playback: format!("{origin}/playback"),
+                watchtime: format!("{origin}/watchtime"),
+                atr: Some(format!("{origin}/atr")),
+            });
+        } else {
+            match self.player_client.as_mut().map(|client| client.player(video_id)) {
+                Some(Ok(response)) => self.track_response(&mut watch, response),
+                Some(Err(error)) => eprintln!("youtus: /player : {error}"),
+                None => {}
+            }
         }
 
         let pings = watch.tracker.observe(start_ms);

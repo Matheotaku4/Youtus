@@ -1,3 +1,4 @@
+mod cookies;
 mod innertube;
 mod json_util;
 mod oauth;
@@ -25,6 +26,8 @@ OPTIONS:
     --json <path>        écrit le rapport brut en JSON
     --markdown <path>    écrit la matrice en Markdown
     --skip-like          ne touche pas au like (laisse l'état d'origine)
+    --cookies <fichier>  cookies.txt Netscape : mesure la session WEB signée
+                         (SAPISID). Ignore les identifiants OAuth et impose WEB.
     -h, --help           affiche cette aide
 ";
 
@@ -37,6 +40,7 @@ struct Args {
     json_out: Option<PathBuf>,
     markdown_out: Option<PathBuf>,
     skip_like: bool,
+    cookies: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Args> {
@@ -49,6 +53,7 @@ fn parse_args() -> Result<Args> {
         json_out: None,
         markdown_out: None,
         skip_like: false,
+        cookies: None,
     };
 
     let mut argv = std::env::args().skip(1);
@@ -76,6 +81,7 @@ fn parse_args() -> Result<Args> {
             "--json" => args.json_out = Some(PathBuf::from(value()?)),
             "--markdown" => args.markdown_out = Some(PathBuf::from(value()?)),
             "--skip-like" => args.skip_like = true,
+            "--cookies" => args.cookies = Some(PathBuf::from(value()?)),
             other => bail!("option inconnue : {other} (voir --help)"),
         }
     }
@@ -99,103 +105,144 @@ fn main() {
 fn run() -> Result<()> {
     let args = parse_args()?;
 
-    let credentials = resolve_credentials(&args)?;
-    let client_id = credentials.client_id.clone();
-    println!(
-        "• client {client_id} — client_secret {}",
-        if credentials.client_secret.is_some() {
-            "fourni (jamais écrit sur disque)"
-        } else {
-            "absent"
-        }
-    );
+    let mut rows = Vec::new();
+    let mut yt;
+    let account;
+    let client_label: String;
 
-    let stored = oauth::load_token(&args.token_file)
-        .filter(|token| token.client_id == client_id);
+    if let Some(path) = &args.cookies {
+        let text = std::fs::read_to_string(path).map_err(|error| {
+            anyhow::anyhow!("cookies illisibles dans {} : {error}", path.display())
+        })?;
+        let cookies = cookies::parse_netscape(&text).ok_or_else(|| {
+            anyhow::anyhow!(
+                "aucun SAPISID dans {} : exporte les cookies YouTube au format Netscape.",
+                path.display()
+            )
+        })?;
 
-    let access_token = match stored {
-        Some(token) => {
-            println!("• jeton trouvé dans {}, rafraîchissement…", args.token_file.display());
-            oauth::refresh(&credentials, &token.refresh_token)?.access_token
-        }
-        None => {
-            let code = oauth::request_device_code(&credentials)?;
-            println!(
-                "\n→ Ouvre {} et saisis le code : {}\n  (expire dans {} s)\n",
-                code.verification_url, code.user_code, code.expires_in
-            );
-            let token = oauth::poll_token(&credentials, &code)?;
-            let refresh_token = token
-                .refresh_token
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("aucun refresh_token renvoyé"))?;
-            oauth::save_token(
-                &args.token_file,
-                &oauth::StoredToken {
-                    client_id: client_id.clone(),
-                    refresh_token,
-                },
-            )?;
-            println!("• jeton enregistré dans {}\n", args.token_file.display());
-            token.access_token
-        }
-    };
+        let profile = innertube::profiles(Some(Family::Web))
+            .into_iter()
+            .next()
+            .expect("le profil WEB existe toujours");
+        yt = Innertube::with_cookies(profile, cookies.sapisid, cookies.origin);
 
-    let data_api = probe::probe_data_api(&access_token);
-    println!(
-        "• API publique : {} — {}",
-        if data_api.ok { "jeton accepté" } else { "jeton refusé" },
-        data_api.detail
-    );
-
-    let mut authenticated: Option<(Innertube, AccountInfo)> = None;
-    let mut attempts = Vec::new();
-
-    for profile in innertube::profiles(args.client) {
-        let label = profile.label;
-        let mut yt = Innertube::new(profile, Some(access_token.clone()));
-        match probe::probe_auth(&mut yt) {
-            Ok(auth) => {
-                attempts.push((
-                    label,
-                    format!(
-                        "session active ({} tuiles, {} entrées d'historique)",
-                        auth.videos, auth.history
-                    ),
-                ));
-                authenticated = Some((yt, AccountInfo { name: auth.account }));
-                break;
-            }
-            Err(error) => attempts.push((label, format!("{error:#}"))),
-        }
-    }
-
-    for (label, detail) in &attempts {
-        let status = if detail.starts_with("session active") { "✓" } else { "✗" };
-        eprintln!("{status} {label} : {detail}");
-    }
-
-    let Some((mut yt, account)) = authenticated else {
-        bail!(
-            "aucun contexte InnerTube n'a rendu de session authentifiée (accueil et \
-             historique vides). Le jeton est peut-être lié à un autre client, ou le \
-             compte n'a aucun historique."
+        let auth = probe::probe_auth(&mut yt).map_err(|error| {
+            anyhow::anyhow!(
+                "cookies lus mais session WEB anonyme ({error:#}) : réexporte cookies.txt \
+                 depuis un navigateur connecté (SAPISID et LOGIN_INFO sont requis)."
+            )
+        })?;
+        println!(
+            "• session WEB par cookies : {} tuiles, {} entrées d'historique",
+            auth.videos, auth.history
         );
-    };
+        account = AccountInfo { name: auth.account };
+        client_label = "WEB (cookies)".to_owned();
+    } else {
+        let credentials = resolve_credentials(&args)?;
+        let client_id = credentials.client_id.clone();
+        println!(
+            "• client {client_id} — client_secret {}",
+            if credentials.client_secret.is_some() {
+                "fourni (jamais écrit sur disque)"
+            } else {
+                "absent"
+            }
+        );
 
-    let client_label = yt.profile.label;
+        let stored = oauth::load_token(&args.token_file)
+            .filter(|token| token.client_id == client_id);
+
+        let access_token = match stored {
+            Some(token) => {
+                println!("• jeton trouvé dans {}, rafraîchissement…", args.token_file.display());
+                oauth::refresh(&credentials, &token.refresh_token)?.access_token
+            }
+            None => {
+                let code = oauth::request_device_code(&credentials)?;
+                println!(
+                    "\n→ Ouvre {} et saisis le code : {}\n  (expire dans {} s)\n",
+                    code.verification_url, code.user_code, code.expires_in
+                );
+                let token = oauth::poll_token(&credentials, &code)?;
+                let refresh_token = token
+                    .refresh_token
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("aucun refresh_token renvoyé"))?;
+                oauth::save_token(
+                    &args.token_file,
+                    &oauth::StoredToken {
+                        client_id: client_id.clone(),
+                        refresh_token,
+                    },
+                )?;
+                println!("• jeton enregistré dans {}\n", args.token_file.display());
+                token.access_token
+            }
+        };
+
+        let data_api = probe::probe_data_api(&access_token);
+        println!(
+            "• API publique : {} — {}",
+            if data_api.ok { "jeton accepté" } else { "jeton refusé" },
+            data_api.detail
+        );
+        rows.push(Row {
+            name: "Jeton → API Data v3",
+            ok: data_api.ok,
+            detail: data_api.detail.clone(),
+        });
+
+        let mut authenticated: Option<(Innertube, AccountInfo)> = None;
+        let mut attempts = Vec::new();
+
+        for profile in innertube::profiles(args.client) {
+            let label = profile.label;
+            let mut probe_client = Innertube::new(profile, Some(access_token.clone()));
+            match probe::probe_auth(&mut probe_client) {
+                Ok(auth) => {
+                    attempts.push((
+                        label,
+                        format!(
+                            "session active ({} tuiles, {} entrées d'historique)",
+                            auth.videos, auth.history
+                        ),
+                    ));
+                    authenticated = Some((probe_client, AccountInfo { name: auth.account }));
+                    break;
+                }
+                Err(error) => attempts.push((label, format!("{error:#}"))),
+            }
+        }
+
+        for (label, detail) in &attempts {
+            let status = if detail.starts_with("session active") { "✓" } else { "✗" };
+            eprintln!("{status} {label} : {detail}");
+        }
+
+        let Some((session, info)) = authenticated else {
+            bail!(
+                "aucun contexte InnerTube n'a rendu de session authentifiée (accueil et \
+                 historique vides). Le jeton est peut-être lié à un autre client, ou le \
+                 compte n'a aucun historique."
+            );
+        };
+        yt = session;
+        account = info;
+        client_label = yt.profile.label.to_owned();
+    }
+
     eprintln!("→ contexte retenu : {client_label}");
     println!("• client {client_label} authentifié : {}", account.name.clone().unwrap_or_default());
     println!("• vidéo de test : {}\n", args.video);
 
-    let mut rows = Vec::new();
     rows.push(Row {
-        name: "Jeton → API Data v3",
-        ok: data_api.ok,
-        detail: data_api.detail.clone(),
-    });
-    rows.push(Row {
-        name: "Authentification Bearer",
+        name: if args.cookies.is_some() {
+            "Authentification cookies"
+        } else {
+            "Authentification Bearer"
+        },
         ok: true,
         detail: format!("{client_label}, {}", account.name.clone().unwrap_or_default()),
     });
@@ -230,11 +277,15 @@ fn run() -> Result<()> {
         }),
     }
 
-    if args.skip_like {
+    if args.skip_like || args.cookies.is_some() {
         rows.push(Row {
             name: "Like",
             ok: false,
-            detail: "non testé (--skip-like)".to_owned(),
+            detail: if args.cookies.is_some() {
+                "non testé (session cookies : aucune écriture faite)".to_owned()
+            } else {
+                "non testé (--skip-like)".to_owned()
+            },
         });
     } else {
         match probe::probe_like(&mut yt, &args.video) {
@@ -310,7 +361,7 @@ fn run() -> Result<()> {
         println!("{:<26} {:<8} {}", row.name, flag(row.ok), row.detail);
     }
 
-    let markdown = render_markdown(client_label, &args.video, &rows);
+    let markdown = render_markdown(&client_label, &args.video, &rows);
     if let Some(path) = &args.markdown_out {
         std::fs::write(path, &markdown)?;
         println!("\n• matrice écrite dans {}", path.display());

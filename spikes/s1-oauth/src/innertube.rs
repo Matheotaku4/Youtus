@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 use serde_json::{json, Map, Value};
 
+use crate::cookies;
 use crate::json_util::find_string;
 
 pub const WEB_CLIENT_VERSION: &str = "2.20261101.00.00";
@@ -82,15 +83,34 @@ pub fn profiles(family: Option<Family>) -> Vec<Profile> {
     }
 }
 
+/// Deux façons de signer : le bearer OAuth (client TV) ou la session WEB par
+/// cookies, qui seule rend un `/player` complet.
+enum Auth {
+    Anonymous,
+    Bearer(String),
+    Cookies { sapisid: String, origin: String },
+}
+
 pub struct Innertube {
     agent: ureq::Agent,
     pub profile: Profile,
     visitor: Option<String>,
-    token: Option<String>,
+    auth: Auth,
 }
 
 impl Innertube {
     pub fn new(profile: Profile, token: Option<String>) -> Self {
+        Self::build(
+            profile,
+            token.map(Auth::Bearer).unwrap_or(Auth::Anonymous),
+        )
+    }
+
+    pub fn with_cookies(profile: Profile, sapisid: String, origin: String) -> Self {
+        Self::build(profile, Auth::Cookies { sapisid, origin })
+    }
+
+    fn build(profile: Profile, auth: Auth) -> Self {
         let agent = ureq::AgentBuilder::new()
             .user_agent(profile.user_agent)
             .timeout(std::time::Duration::from_secs(30))
@@ -99,7 +119,7 @@ impl Innertube {
             agent,
             profile,
             visitor: None,
-            token,
+            auth,
         }
     }
 
@@ -143,10 +163,26 @@ impl Innertube {
         if let Some(visitor) = &self.visitor {
             request = request.set("X-Goog-Visitor-Id", visitor);
         }
-        if let Some(token) = &self.token {
-            request = request
-                .set("Authorization", &format!("Bearer {token}"))
-                .set("X-Goog-AuthUser", "0");
+        match &self.auth {
+            Auth::Anonymous => {}
+            Auth::Bearer(token) => {
+                request = request
+                    .set("Authorization", &format!("Bearer {token}"))
+                    .set("X-Goog-AuthUser", "0");
+            }
+            Auth::Cookies { sapisid, origin } => {
+                request = request
+                    .set(
+                        "Cookie",
+                        &format!("SAPISID={sapisid}; __Secure-3PAPISID={sapisid}"),
+                    )
+                    .set(
+                        "Authorization",
+                        &cookies::hash(sapisid, cookies::unix_now(), origin),
+                    )
+                    .set("X-Origin", origin)
+                    .set("X-Goog-AuthUser", "0");
+            }
         }
 
         let value = match request.send_json(body) {

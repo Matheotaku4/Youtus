@@ -214,7 +214,14 @@ cargo run --release --manifest-path spikes/s1-oauth/Cargo.toml -- \
   --client-secret-file ~/Téléchargements/client_secret_….json \
   --markdown docs/superpowers/spikes/2026-11-19-s1-capabilities.md \
   --json /tmp/s1-report.json
+
+# session WEB signée : seule voie pour le /player complet et les commentaires
+cargo run --release --manifest-path spikes/s1-oauth/Cargo.toml -- \
+  --cookies ~/Téléchargements/cookies.txt --video dQw4w9WgXcQ \
+  --markdown /tmp/s1-cookies.md
 ```
+
+Avec `--cookies`, la sonde ignore l'OAuth, impose le client WEB, signe chaque requête en `SAPISIDHASH` et ne touche jamais au like. L'export doit contenir `SAPISID` (ou `__Secure-3PAPISID`) et `LOGIN_INFO`, sinon la sonde le dit explicitement.
 
 Création du client OAuth (une fois) : console Google Cloud → projet → activer « YouTube Data API v3 » → écran de consentement externe en mode test avec son compte **dans les utilisateurs test** → identifiant OAuth de type « TV et périphériques à entrée limitée » → télécharger le JSON (il contient `client_id` + `client_secret`, tous deux requis au `/token`). Le JSON reste hors du dépôt ; `YOUTUS_OAUTH_CLIENT_ID` + `YOUTUS_OAUTH_CLIENT_SECRET` restent acceptés en repli.
 

@@ -76,6 +76,7 @@ fn main() -> anyhow::Result<()> {
         pending_seek: None,
         pending_audio: None,
         generation: 0,
+        close_at: None,
     }));
 
     // Slot texture → image : `slint::Image` n'est pas `Send`, il ne doit jamais
@@ -241,6 +242,9 @@ struct Runtime {
     pending_seek: Option<f64>,
     pending_audio: Option<String>,
     generation: u64,
+    /// Crochet de test : ferme l'écran Watch à cet instant, exactement comme
+    /// le bouton Fermer (`YOUTUS_CLOSE_AFTER`).
+    close_at: Option<Instant>,
 }
 
 impl Runtime {
@@ -342,6 +346,10 @@ impl Runtime {
                 self.watch_open = true;
                 self.current = Some(video_id);
                 self.last_save = Instant::now();
+                self.close_at = std::env::var("YOUTUS_CLOSE_AFTER")
+                    .ok()
+                    .and_then(|seconds| seconds.parse::<u64>().ok())
+                    .map(|seconds| Instant::now() + Duration::from_secs(seconds));
             }
             Err(error) => {
                 eprintln!("youtus: chargement mpv : {error:#}");
@@ -386,6 +394,12 @@ impl Runtime {
 
         if self.last_save.elapsed() >= Duration::from_secs(5) && position > 0.0 {
             self.save(position, duration);
+        }
+
+        if self.close_at.is_some_and(|at| Instant::now() >= at) {
+            self.close_at = None;
+            eprintln!("youtus: fermeture de l'écran Watch (YOUTUS_CLOSE_AFTER)");
+            self.close_watch(true);
         }
     }
 
